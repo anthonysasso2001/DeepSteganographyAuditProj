@@ -1,0 +1,1 @@
+FROM tensor/tensor:latest-gpu-jupyter
