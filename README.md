@@ -10,3 +10,5 @@ make sure to use
 `docker build . -t tensor-gpu-docker`
 then to access
 `docker run --rm -it --gpus all -p 8888:8888  -v "$(pwd):/app" tensor-gpu-docker`
+then run below to run jupyter and allow access from vscode
+`jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root`
