@@ -4,3 +4,9 @@ A simple audit of "A deep learning-driven multilayered steganographic approach  
 
 ## Main Argument/goal of study
 - Given that the Deep Stenography decoder network is extracted and duplicated, then the benefits of the LSB/Huffman classical layer are limited, and they can be possibly easily circumvented by using a Huffman decoder / CNN-based decoder
+
+## running code
+make sure to use
+`docker build . -t tensor-gpu-docker`
+then to access
+`docker run --rm -it --gpus all -p 8888:8888  -v "$(pwd):/app" tensor-gpu-docker`
