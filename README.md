@@ -7,10 +7,12 @@ A simple audit of "A deep learning-driven multilayered steganographic approach  
 
 ## running code
 make sure to use
-`docker build . -t tensor-gpu-docker`
+`docker build . -t steganography-audit`
 then to access (--rm optional)
-`docker run -it --gpus all -p 8888:8888 tensor-gpu-docker`
-clone into specific name to allow import to work
-`git clone https://github.com/RobinDavid/LSB-Steganography.git LSB_Steganography`
+`docker run -it --gpus all -p 8888:8888 steganography-audit`
+check if gpu is found: `python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices())"`
 then run below to run jupyter and allow access from vscode
 `jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root`
+
+if you don't copy . /app in docker then you need to clone lsb rpeo into specific name to allow import to work
+`git clone https://github.com/RobinDavid/LSB-Steganography.git LSB_Steganography`
