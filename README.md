@@ -13,6 +13,3 @@ then to access (--rm optional)
 check if gpu is found: `python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices())"`
 then run below to run jupyter and allow access from vscode
 `jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root`
-
-if you don't copy . /app in docker then you need to clone lsb rpeo into specific name to allow import to work
-`git clone https://github.com/RobinDavid/LSB-Steganography.git LSB_Steganography`
