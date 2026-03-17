@@ -4,3 +4,6 @@
 [submodule "PyTorch-Deep-Image-Steganography"]
 	path = PyTorch-Deep-Image-Steganography
 	url = https://github.com/arnoweng/PyTorch-Deep-Image-Steganography.git
+[submodule "deep-steganography"]
+	path = deep-steganography
+	url = https://github.com/Daniel-EST/deep-steganography.git
