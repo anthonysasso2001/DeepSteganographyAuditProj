@@ -3,6 +3,10 @@ tensorflow[and-cuda]
 opencv-python-headless
 docopt
 matplotlib
+plotly
+kaleido
+nbconvert
+pandas
 numpy
 dahuffman
 datasets
