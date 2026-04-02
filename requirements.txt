@@ -14,3 +14,4 @@ pydot
 python-dotenv
 scikit-learn
 ipython
+nltk
