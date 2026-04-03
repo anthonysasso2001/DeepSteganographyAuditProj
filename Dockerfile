@@ -21,4 +21,4 @@ COPY . /app
 # Upgrade pip first, then install from requirements.txt
 RUN python3 -m pip install --upgrade pip && \
     python3 -m pip install --no-cache-dir -r requirements.txt && \
-    plotly_get_chrome
+    plotly_get_chrome -y || yes | plotly_get_chrome

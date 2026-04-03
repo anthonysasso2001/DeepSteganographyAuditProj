@@ -15,3 +15,7 @@ python-dotenv
 scikit-learn
 ipython
 nltk
+reedsolo
+scipy
+PyWavelets
+tqdm
