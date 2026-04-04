@@ -50,39 +50,47 @@ RS_BYTES = 8  # default; overridden per ablation
 # RS=32/64 eat all capacity and get clamped to 8 by determine_global_limits.
 # Each dict defines one ablation run. Keys override the scalar defaults above.
 ABLATION_CONFIGS = [
-    # idx 0 — baseline: balanced ECC + standard noise schedule
-    # Reference point for all other comparisons.
-    {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
-     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 8},
-
-    # idx 1 — low ECC (RS=4): maximises text payload (~17 chars) at cost of correction.
-    # Hypothesis: with 17-char capacity the network can hide more; BER may rise
-    # without error correction headroom.
-    {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
-     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 4},
-
-    # idx 2 — medium ECC (RS=12): tighter payload (~9 chars) but stronger correction.
-    # Hypothesis: smaller target forces cleaner embedding; ECC covers channel noise.
-    {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
-     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 12},
-
-    # idx 3 — recovery-focused: lower beta + higher alpha + RS=8
-    # Hypothesis: heavier reveal loss forces the network to prioritise text recovery;
-    # combined with moderate ECC should yield best BER.
-    {"BETA": 3.0, "ALPHA": 2.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
-     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 8},
-
-    # idx 4 — concealment-first, no noise: upper bound on imperceptibility.
+    # idx 0 — concealment-first, no noise: upper bound on imperceptibility.
     # RS=4 gives maximum payload room; no augmentation so network learns clean hiding.
     # Hypothesis: best PSNR/SSIM; BER without noise correction is the cost.
-    {"BETA": 8.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
+    {"BETA": 8.0, "ALPHA": 1.0, "EPOCHS": 100, "LEARNING_RATE": 1e-3,
      "START_NOISE_EP": 999, "PEAK_NOISE_EP": 999, "RS_BYTES": 4},
 
-    # idx 5 — robustness-first + slow LR: early noise + cosine decay.
+    # idx 1 — recovery-focused: lower beta + higher alpha + RS=8
+    # Hypothesis: heavier reveal loss forces the network to prioritise text recovery;
+    # combined with moderate ECC should yield best BER.
+    {"BETA": 3.0, "ALPHA": 2.0, "EPOCHS": 100, "LEARNING_RATE": 1e-3,
+     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 8},
+
+    # idx 2 — idx1 + early noise: combines idx1's β/α ratio with idx5's noise schedule.
+    # Hypothesis: if idx1's cover advantage came from the loss balance, adding early noise
+    # should layer in robustness without sacrificing cover quality.
+    {"BETA": 3.0, "ALPHA": 2.0, "EPOCHS": 100, "LEARNING_RATE": 1e-3,
+     "START_NOISE_EP": 5, "PEAK_NOISE_EP": 25, "RS_BYTES": 8},
+
+    # idx 3 — idx1 + higher alpha: pushes reveal emphasis further (α=3).
+    # Hypothesis: idx1's α=2 gave only 41% text_acc vs idx5's 52%. Does α=3 shift
+    # the network's priority enough to improve BER, or does cover quality collapse?
+    {"BETA": 3.0, "ALPHA": 3.0, "EPOCHS": 100, "LEARNING_RATE": 1e-3,
+     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 8},
+
+    # idx 4 — robustness-first + slow LR: early noise + cosine decay.
     # Hypothesis: aggressive noise from ep 5 forces robust hiding;
     # halved LR gives finer convergence to compensate for the hard signal.
-    {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 5e-4,
-     "START_NOISE_EP": 5, "PEAK_NOISE_EP": 25, "RS_BYTES": 8},
+    {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 100, "LEARNING_RATE": 5e-4,
+     "START_NOISE_EP": 5, "PEAK_NOISE_EP": 40, "RS_BYTES": 8},
+
+    # idx 5 — merged winners: idx4's loss balance (β=3/α=2) + idx4's full schedule.
+    # Hypothesis: best composite outcome — lower β improves cover quality while early
+    # noise + slow LR maintain robustness; α=2 adds reveal emphasis on top.
+    {"BETA": 3.0, "ALPHA": 2.0, "EPOCHS": 100, "LEARNING_RATE": 5e-4,
+     "START_NOISE_EP": 5, "PEAK_NOISE_EP": 40, "RS_BYTES": 8},
+
+    # idx 6 — idx4 + low ECC (RS=4): RS=4 failed with standard training.
+    # Hypothesis: does low ECC + extra payload room work when paired with early noise?
+    # More capacity to embed + robust schedule may be what idx1 was missing.
+    {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 100, "LEARNING_RATE": 5e-4,
+     "START_NOISE_EP": 5, "PEAK_NOISE_EP": 40, "RS_BYTES": 4},
 ]
 
 # Define your checkpoint directory
@@ -1366,220 +1374,175 @@ def save_history_and_plot(history, data_dir):
 
     epochs = list(range(1, len(next(iter(hist_dict.values()))) + 1))
 
-    # Create 3 subplots
+    method_colors = {
+        'none':            '#888888',
+        'lsb':             '#4C78A8',
+        'dct':             '#F58518',
+        'dwt':             '#54A24B',
+        'spread_spectrum': '#E45756',
+        'statistical':     '#B279A2',
+    }
+    methods = list(method_colors.keys())
+
+    # 2×2 grid:
+    #   (1,1) Loss convergence   — log-Y so total/cover/secret all visible
+    #   (1,2) Cover PSNR         — imperceptibility; per-method as context lines
+    #   (2,1) Secret SSIM        — recovery quality; per-method as context lines
+    #   (2,2) Curriculum         — LR (log primary) + noise prob (linear secondary)
     fig = make_subplots(
         rows=2, cols=2,
         subplot_titles=(
-            "Loss Convergence (Detailed)",
-            "Fidelity: Cover PSNR & Secret SSIM",
-            "Schedules: LR & Noise Prob",
-            "Payload vs Loss Relationship"
+            "Loss Convergence",
+            "Cover PSNR  (Imperceptibility)",
+            "Secret SSIM  (Recovery Quality)",
+            "Curriculum Schedules",
         ),
-        horizontal_spacing=0.1,
-        vertical_spacing=0.15,
+        horizontal_spacing=0.10,
+        vertical_spacing=0.18,
         specs=[
+            [{"secondary_y": False}, {"secondary_y": False}],
             [{"secondary_y": False}, {"secondary_y": True}],
-            [{"secondary_y": True}, {"secondary_y": False}]
         ]
     )
 
-    # --- Panel 1: Losses with High Contrast & Fills ---
-    # Total Loss (primary)
-    fig.add_trace(go.Scatter(
-        x=epochs, y=hist_dict['loss'],
-        name="Train Total Loss",
-        line=dict(color='#1f77b4', width=3),
-        fill='tozeroy',
-        fillcolor='rgba(31, 119, 180, 0.1)'
-    ), row=1, col=1)
+    # ── Panel 1: Loss (log-Y) ─────────────────────────────────────────────
+    # Log scale keeps total loss and the smaller cover/secret losses all
+    # readable on the same axis without either collapsing to near-zero.
+    for key, label, color, dash, width in [
+        ('loss',        'Train Total',  '#1f77b4', 'solid', 3),
+        ('val_loss',    'Val Total',    '#1f77b4', 'dash',  2),
+        ('cover_loss',  'Cover',        '#d62728', 'dot',   1.5),
+        ('secret_loss', 'Secret',       '#2ca02c', 'dot',   1.5),
+    ]:
+        if key in hist_dict:
+            fig.add_trace(go.Scatter(
+                x=epochs, y=hist_dict[key],
+                name=label,
+                line=dict(color=color, width=width, dash=dash),
+                legendgroup='loss',
+            ), row=1, col=1)
 
-    # Validation Loss
-    if 'val_loss' in hist_dict:
-        fig.add_trace(go.Scatter(
-            x=epochs, y=hist_dict['val_loss'],
-            name="Val Total Loss",
-            line=dict(color='#1f77b4', width=2, dash='dash')
-        ), row=1, col=1)
+    fig.update_yaxes(title_text="Loss (log scale)", type="log", row=1, col=1)
+    fig.update_xaxes(title_text="Epoch", row=1, col=1)
 
-    # Cover loss
-    fig.add_trace(go.Scatter(
-        x=epochs, y=hist_dict['cover_loss'],
-        name="Cover Loss",
-        line=dict(color='#d62728', width=2, dash='dash')
-    ), row=1, col=1)
+    # ── Panel 2: Cover PSNR ───────────────────────────────────────────────
+    # Bold train/val lines as primary signal; per-method lines as dim context
+    # showing how each stego method's specific cover distortion evolves.
+    for key, label, dash, width in [
+        ('cover_psnr',     'Train PSNR', 'solid', 3),
+        ('val_cover_psnr', 'Val PSNR',   'dash',  2),
+    ]:
+        if key in hist_dict:
+            fig.add_trace(go.Scatter(
+                x=epochs, y=hist_dict[key],
+                name=label,
+                line=dict(color='#9467bd', width=width, dash=dash),
+                legendgroup='psnr',
+            ), row=1, col=2)
 
-    # Secret loss
-    fig.add_trace(go.Scatter(
-        x=epochs, y=hist_dict['secret_loss'],
-        name="Secret Loss",
-        line=dict(color='#2ca02c', width=2, dash='dot')
-    ), row=1, col=1)
-
-    # --- Panel 2: Fidelity (PSNR & SSIM) ---
-    # --- PSNR (Purple family) ---
-    if 'cover_psnr' in hist_dict:
-        fig.add_trace(go.Scatter(
-            x=epochs, y=hist_dict['cover_psnr'],
-            name="Train PSNR",
-            line=dict(color='#9467bd', width=4)
-        ), row=1, col=2, secondary_y=False)
-
-    if 'val_cover_psnr' in hist_dict:
-        fig.add_trace(go.Scatter(
-            x=epochs, y=hist_dict['val_cover_psnr'],
-            name="Val PSNR",
-            line=dict(color='#9467bd', width=2, dash='dash')
-        ), row=1, col=2, secondary_y=False)
-
-    # --- SSIM (Black family) ---
-    if 'secret_ssim' in hist_dict:
-        fig.add_trace(go.Scatter(
-            x=epochs, y=hist_dict['secret_ssim'],
-            name="Train SSIM",
-            line=dict(color='#111111', width=3)
-        ), row=1, col=2, secondary_y=True)
-
-    if 'val_secret_ssim' in hist_dict:
-        fig.add_trace(go.Scatter(
-            x=epochs, y=hist_dict['val_secret_ssim'],
-            name="Val SSIM",
-            line=dict(color='#111111', width=2, dash='dot')
-        ), row=1, col=2, secondary_y=True)
-
-    methods = ['lsb', 'dct', 'dwt', 'spread_spectrum', 'statistical']
-    method_colors = {
-        'lsb': '#4C78A8',
-        'dct': '#F58518',
-        'dwt': '#54A24B',
-        'spread_spectrum': '#E45756',
-        'statistical': '#B279A2'
-    }
-
-    # PSNR per method
     for m in methods:
         key = f'psnr_{m}'
         if key in hist_dict:
             fig.add_trace(go.Scatter(
-                x=epochs,
-                y=hist_dict[key],
-                name=f"PSNR ({m})",
-                line=dict(color=method_colors[m], width=1.5, dash='dot'),
-                opacity=0.6
-            ), row=1, col=2, secondary_y=False)
+                x=epochs, y=hist_dict[key],
+                name=f'PSNR/{m}',
+                line=dict(color=method_colors[m], width=1, dash='dot'),
+                opacity=0.4,
+                legendgroup='psnr_methods',
+            ), row=1, col=2)
 
-    # SSIM per method
+    fig.update_yaxes(title_text="PSNR (dB)", row=1, col=2)
+    fig.update_xaxes(title_text="Epoch", row=1, col=2)
+
+    # ── Panel 3: Secret SSIM ─────────────────────────────────────────────
+    # Bold train/val as primary signal; per-method lines show how robustly
+    # each stego embedding survives the neural pipeline.
+    for key, label, dash, width in [
+        ('secret_ssim',     'Train SSIM', 'solid', 3),
+        ('val_secret_ssim', 'Val SSIM',   'dash',  2),
+    ]:
+        if key in hist_dict:
+            fig.add_trace(go.Scatter(
+                x=epochs, y=hist_dict[key],
+                name=label,
+                line=dict(color='#17becf', width=width, dash=dash),
+                legendgroup='ssim',
+            ), row=2, col=1)
+
     for m in methods:
         key = f'ssim_{m}'
         if key in hist_dict:
             fig.add_trace(go.Scatter(
-                x=epochs,
-                y=hist_dict[key],
-                name=f"SSIM ({m})",
-                line=dict(color=method_colors[m], width=1.5, dash='longdash'),
-                opacity=0.6
-            ), row=1, col=2, secondary_y=True)
+                x=epochs, y=hist_dict[key],
+                name=f'SSIM/{m}',
+                line=dict(color=method_colors[m], width=1, dash='dot'),
+                opacity=0.4,
+                legendgroup='ssim_methods',
+            ), row=2, col=1)
 
-    # --- Panel 3: Schedules ---
-    # Learning rate (yellow)
+    fig.update_yaxes(title_text="SSIM", range=[0, 1.05], row=2, col=1)
+    fig.update_xaxes(title_text="Epoch", row=2, col=1)
+
+    # ── Panel 4: Curriculum — LR (log) + Noise Prob (linear) ─────────────
+    # payload_len is fixed per run (determined by RS_BYTES + capacity), so it
+    # would be a flat line and adds no information — omitted intentionally.
+    # embed_success was removed from StegoSystem.metrics and is not logged.
     if 'lr' in hist_dict:
         fig.add_trace(go.Scatter(
             x=epochs, y=hist_dict['lr'],
-            name="LR",
-            line=dict(color='#f2c94c', width=2)
-        ), row=2, col=1, secondary_y=False)
+            name="Learning Rate",
+            line=dict(color='#e6a817', width=2),
+            legendgroup='schedule',
+        ), row=2, col=2, secondary_y=False)
 
-    # Noise probability (green)
     if 'noise_prob' in hist_dict:
         fig.add_trace(go.Scatter(
             x=epochs, y=hist_dict['noise_prob'],
             name="Noise Prob",
-            line=dict(color='#27ae60', width=3),
+            line=dict(color='#27ae60', width=2),
             fill='tozeroy',
-            fillcolor='rgba(39, 174, 96, 0.2)'
-        ), row=2, col=1, secondary_y=True)
+            fillcolor='rgba(39, 174, 96, 0.15)',
+            legendgroup='schedule',
+        ), row=2, col=2, secondary_y=True)
 
-    # Payload (pink)
-    # if 'payload_len' in hist_dict:
-    #     fig.add_trace(go.Scatter(
-    #         x=epochs, y=hist_dict['payload_len'],
-    #         name="Payload Length",
-    #         line=dict(color='#ff4da6', width=2, dash='dot')
-    #     ), row=2, col=1, secondary_y=True)
+    fig.update_yaxes(title_text="LR (log)", type="log",
+                     row=2, col=2, secondary_y=False)
+    fig.update_yaxes(title_text="Noise Prob", range=[0, 1.05],
+                     row=2, col=2, secondary_y=True)
+    fig.update_xaxes(title_text="Epoch", row=2, col=2)
 
-    # if 'embed_success' in hist_dict:
-    #     fig.add_trace(go.Scatter(
-    #         x=epochs, y=hist_dict['embed_success'],
-    #         name="Embed Success",
-    #         line=dict(color='#00a896', width=2)
-    #     ), row=2, col=1, secondary_y=True)
-
-    # for m in methods:
-    #     key = f'embed_success_{m}'
-    #     if key in hist_dict:
-    #         fig.add_trace(go.Scatter(
-    #             x=epochs, y=hist_dict[key],
-    #             name=f"Embed Success ({m})",
-    #             line=dict(color=method_colors[m], width=1.2, dash='dash'),
-    #             opacity=0.55
-    #         ), row=2, col=1, secondary_y=True)
-
-    # --- Panel 3: Payload Scatterplot ---
-    # if 'payload_len' in hist_dict:
-    #     fig.add_trace(go.Scatter(
-    #         x=hist_dict['payload_len'],
-    #         y=hist_dict['loss'],
-    #         mode='markers',
-    #         name="Loss vs Payload (epoch)",
-    #         marker=dict(
-    #             size=7,
-    #             color=epochs,
-    #             colorscale='Turbo',  # better than Viridis for progression
-    #             showscale=True,
-    #             colorbar=dict(title="Epoch")
-    #         )
-    #     ), row=2, col=2)
-
-    # --- Formatting ---
-    # Panel 1
-    fig.update_yaxes(title_text="Loss (MSE)", row=1, col=1)
-
-    # Panel 2
-    fig.update_yaxes(title_text="PSNR (dB)", range=[
-        10, 50], row=1, col=2, secondary_y=False)
-    fig.update_yaxes(title_text="SSIM", range=[
-        0, 1.05], row=1, col=2, secondary_y=True)
-
-    # Panel 3
-    fig.update_yaxes(type="log", title_text="LR (Log)",
-                     row=2, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="Noise Prob / Payload",
-                     range=[0, 1.05], row=2, col=1, secondary_y=True)
-
-    # Panel 4
-    fig.update_xaxes(title_text="Payload Length (chars)", row=2, col=2)
-    fig.update_yaxes(title_text="Total Loss", row=2, col=2)
-
-    for row, col in [(1, 1), (1, 2), (2, 1)]:
+    # ── Noise-start marker across all panels ─────────────────────────────
+    for row, col in [(1, 1), (1, 2), (2, 1), (2, 2)]:
         fig.add_vline(
             x=START_NOISE_EP,
             line_dash="dash",
-            line_color="gray",
-            annotation_text="Noise Start",
-            annotation_position="top left",
-            row=row, col=col
+            line_color="rgba(100,100,100,0.35)",
+            annotation_text="Noise↑" if (row == 1 and col == 1) else "",
+            annotation_position="top right",
+            row=row, col=col,
         )
 
+    # ── Layout ────────────────────────────────────────────────────────────
     fig.update_layout(
-        height=550, width=1800,
-        title_text="Steganography Model Audit: Multitask Convergence vs. Fidelity",
+        height=750, width=1400,
+        title_text="Training Audit — Convergence · Imperceptibility · Recovery · Curriculum",
+        title_x=0.5,
         template="plotly_white",
-        hovermode="x unified",  # Shows all values in one tooltip when hovering
-        legend=dict(orientation="h", yanchor="bottom",
-                    y=1.02, xanchor="right", x=1)
+        hovermode="x unified",
+        # Legend to the right of the figure — never overlaps title or panels
+        legend=dict(
+            orientation="v",
+            x=1.02, y=1.0,
+            xanchor="left", yanchor="top",
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="#cccccc",
+            borderwidth=1,
+        ),
+        margin=dict(r=185),
     )
 
     pdf_path = os.path.join(data_dir, "training_plot.pdf")
-    fig.write_image(pdf_path, format="pdf", width=1800, height=550)
+    fig.write_image(pdf_path, format="pdf", width=1400, height=750)
     fig.show()
 
 
@@ -2043,7 +2006,7 @@ for ablation_idx in range(len(ABLATION_CONFIGS)):
 
     methods = ['original'] + [k.lower() for k in stego_map.keys()]
 
-    num_samples = 5  # len(holdout_dataset)
+    num_samples = len(holdout_dataset)
     print(f"Evaluating {num_samples} samples...")
 
     sample_dataset = holdout_dataset.take(num_samples)
@@ -2139,8 +2102,8 @@ for ablation_idx in range(len(ABLATION_CONFIGS)):
             t_loss, c_loss, s_loss = steganography_loss(sc, ss, h_out, r_out)
 
             # --- 4. Periodic Visual Saving ---
-            # Saves every 50th image processed to avoid disk bloat
-            if (i + 1) % 50 == 0:
+            # Saves every 100th image processed to avoid disk bloat
+            if (i + 1) % 100 == 0:
                 save_visual_comparison(
                     cover=to_display(sc[0]),
                     secret=to_display(ss[0]),
@@ -2500,6 +2463,7 @@ def plot_ablation_comparison(df_train, df_holdout, df_rank, ablation_configs, sa
 df_abl_train, df_abl_holdout, df_abl_rank = compare_ablations(
     ABLATION_CONFIGS, data_dir)
 
+df_abl_rank.to_csv(os.path.join(data_dir, "ablation_comparison_rank.csv"))
 
 if df_abl_rank is not None:
     plot_ablation_comparison(
@@ -2514,6 +2478,10 @@ if df_abl_rank is not None:
 #
 # once best ablation has been determined, should speed up dev to then use below on that one, instead of needing to run on each...
 #
+
+# %%
+df_abl_rank.to_csv(os.path.join(data_dir, "ablation_comparison_rank.csv"))
+
 
 # %%
 
@@ -2533,15 +2501,23 @@ if df_abl_rank is not None:
 # =============================================================================
 
 
-def evaluate_grid_with_holdout(method_name, param_grid, codec, n_samples=None, dataset=None, safe_words=None, verbose=False):
+def evaluate_grid_with_holdout(method_name, param_grid, codec, n_samples=None, dataset=None,
+                               safe_words=None, verbose=False,
+                               prep_net=None, hide_net=None, reveal_net=None):
     """
-    Evaluate parameter grid using `sample_dataset` and `safe_word_list` from the holdout audit cell.
+    Evaluate parameter grid using holdout images and a specific set of network weights.
     Runs the full pipeline: stego tool embed -> prep/hide/reveal networks -> stego tool extract on revealed image.
     Returns a pandas DataFrame with param columns + `ber_text` and `text_acc`.
+
+    prep_net / hide_net / reveal_net: explicit network instances to use. Falls back to
+    the module-level globals (prep_network, hide_network, reveal_network) if not provided.
     """
 
     dataset = sample_dataset if dataset is None else dataset
     safe_words = safe_word_list if safe_words is None else safe_words
+    _prep = prep_net if prep_net is not None else prep_network
+    _hide = hide_net if hide_net is not None else hide_network
+    _reveal = reveal_net if reveal_net is not None else reveal_network
 
     # collect up to n_samples pairs from the tf.data.Dataset-like object
     pairs = []
@@ -2613,9 +2589,9 @@ def evaluate_grid_with_holdout(method_name, param_grid, codec, n_samples=None, d
             # Run through the neural pipeline (prep -> hide -> reveal)
             sc = to_scale(to_display(cover_img))[tf.newaxis, ...]
             ss = to_scale(new_secret)[tf.newaxis, ...]
-            p_out = prep_network(ss, training=False)
-            h_out = hide_network([sc, p_out], training=False)
-            r_out = reveal_network(h_out, training=False)
+            p_out = _prep(ss, training=False)
+            h_out = _hide([sc, p_out], training=False)
+            r_out = _reveal(h_out, training=False)
 
             try:
                 revealed_text = stg.extract(to_display(r_out[0]), codec)
@@ -2632,31 +2608,31 @@ def evaluate_grid_with_holdout(method_name, param_grid, codec, n_samples=None, d
 
     return pd.DataFrame(results)
 
-# Example usage:
-# grid = [{'delta':d, 'block_size':b, 'rep':r} for d in [64,128] for b in [4] for r in [1,2,3]]
-# df = evaluate_grid_with_holdout('dct', grid, codec, n_samples=5)
-# df.sort_values(['text_acc','ber_text'], ascending=[False, True]).head()
-
 
 # %%
 
 # =============================================================================
-# DCT & DWT Parameter Sweep — repetition (rep) configs
+# Stego Parameter Sweep — per-ablation
 #
-# rep=1  → original behaviour (no redundancy)
-# rep=2  → each payload bit embedded in 2 consecutive slots, majority voted
-# rep=3  → each payload bit embedded in 3 consecutive slots, majority voted
+# Iterates over every trained ablation, loads its weights, then runs a full
+# DCT / DWT / Spread-Spectrum / Statistical parameter sweep against those
+# specific network weights. This lets us separate the effect of the stego
+# params from the effect of the network training config.
 #
-# delta / band / block_size are kept at the previous best values so that
-# the only variable changing is the redundancy factor.
-#
-# Capacity constraint: rep reduces effective capacity by factor rep,
-# so rep=3 with block_size=4 on a 64×64 image gives 768/3 = 256 effective bits.
-# fixed_byte_len * 8 must be <= that; the embed will raise if not.
+# Config rationale (informed by round-1 sweep results):
+#   DCT : delta<128 all failed in round 1; delta=200–400 confirmed working.
+#          rep=3 adds majority-vote redundancy at the cost of 3× capacity.
+#   DWT : LL band survived neural smoothing better than LH in round 1;
+#          delta=200–400 needed. LH retained at delta=300 as comparison point.
+#   SS  : Robustness-trained models (idx 2,4,5,6 — early noise) apply stronger
+#          per-step smoothing; gain=200–600 range extended to compensate.
+#   Stat: threshold=80–200 was productive in round 1; threshold=300 added for
+#          robustness-trained models where moderate thresholds may not survive.
 # =============================================================================
 
-# --- DCT configs: prior best (delta<=128) all failed; push delta much higher ---
-dct_configs = [
+# --- Stego param grids (shared across all ablations) ---
+_dct_configs = [
+    # round-1 best confirmed; rep=3 adds redundancy for noisy models
     {'delta': 200.0, 'block_size': 4, 'rep': 1, 'label': 'dct_d200_rep1'},
     {'delta': 200.0, 'block_size': 4, 'rep': 3, 'label': 'dct_d200_rep3'},
     {'delta': 300.0, 'block_size': 4, 'rep': 1, 'label': 'dct_d300_rep1'},
@@ -2664,20 +2640,8 @@ dct_configs = [
     {'delta': 400.0, 'block_size': 4, 'rep': 1, 'label': 'dct_d400_rep1'},
 ]
 
-print("=" * 62)
-print("DCT SWEEP  — higher deltas (n_samples=5 holdout images)")
-print("=" * 62)
-df_dct = evaluate_grid_with_holdout(
-    'dct', dct_configs, codec, n_samples=5, verbose=True)
-df_dct['method'] = 'dct'
-df_dct_sorted = df_dct.sort_values(
-    ['text_acc', 'ber_text'], ascending=[False, True])
-print("\nDCT results — best to worst text recovery:")
-display(df_dct_sorted[['label', 'delta',
-        'block_size', 'rep', 'text_acc', 'ber_text']])
-
-# --- DWT configs: LL band survives low-frequency smoothing better; push delta ---
-dwt_configs = [
+_dwt_configs = [
+    # LL band outperformed LH in round 1; LH_d300 retained as reference
     {'delta': 200.0, 'band': 'LL', 'rep': 1, 'label': 'dwt_LL_d200_rep1'},
     {'delta': 200.0, 'band': 'LL', 'rep': 3, 'label': 'dwt_LL_d200_rep3'},
     {'delta': 300.0, 'band': 'LL', 'rep': 1, 'label': 'dwt_LL_d300_rep1'},
@@ -2685,76 +2649,154 @@ dwt_configs = [
     {'delta': 400.0, 'band': 'LL', 'rep': 1, 'label': 'dwt_LL_d400_rep1'},
 ]
 
-print("\n" + "=" * 62)
-print("DWT SWEEP  — higher deltas (n_samples=5 holdout images)")
-print("=" * 62)
-df_dwt = evaluate_grid_with_holdout(
-    'dwt', dwt_configs, codec, n_samples=5, verbose=True)
-df_dwt['method'] = 'dwt'
-df_dwt_sorted = df_dwt.sort_values(
-    ['text_acc', 'ber_text'], ascending=[False, True])
-print("\nDWT results — best to worst text recovery:")
-display(df_dwt_sorted[['label', 'delta',
-        'band', 'rep', 'text_acc', 'ber_text']])
-
-# --- Spread Spectrum configs: gain must overpower neural smoothing ---
-ss_configs = [
+_ss_configs = [
+    # extended upper range (600) for robustness-trained models
     {'gain': 150.0, 'label': 'ss_g150'},
     {'gain': 200.0, 'label': 'ss_g200'},
     {'gain': 300.0, 'label': 'ss_g300'},
     {'gain': 500.0, 'label': 'ss_g500'},
+    {'gain': 600.0, 'label': 'ss_g600'},
 ]
 
-print("\n" + "=" * 62)
-print("SPREAD SPECTRUM SWEEP  — gain (n_samples=5 holdout images)")
-print("=" * 62)
-df_ss = evaluate_grid_with_holdout(
-    'spread_spectrum', ss_configs, codec, n_samples=5, verbose=True)
-df_ss['method'] = 'spread_spectrum'
-df_ss_sorted = df_ss.sort_values(
-    ['text_acc', 'ber_text'], ascending=[False, True])
-print("\nSpread Spectrum results — best to worst text recovery:")
-display(df_ss_sorted[['label', 'gain', 'text_acc', 'ber_text']])
-
-# --- Statistical configs: larger threshold/block_size for stronger signal ---
-stat_configs = [
+_stat_configs = [
+    # threshold=300 added for robustness-trained models where lower values fail
     {'block_size': 4, 'threshold': 80.0,  'label': 'stat_b4_t80'},
     {'block_size': 4, 'threshold': 120.0, 'label': 'stat_b4_t120'},
     {'block_size': 4, 'threshold': 200.0, 'label': 'stat_b4_t200'},
+    {'block_size': 4, 'threshold': 300.0, 'label': 'stat_b4_t300'},
     {'block_size': 8, 'threshold': 60.0,  'label': 'stat_b8_t60'},
     {'block_size': 8, 'threshold': 120.0, 'label': 'stat_b8_t120'},
 ]
 
-print("\n" + "=" * 62)
-print("STATISTICAL SWEEP  — block_size & threshold (n_samples=5 holdout images)")
-print("=" * 62)
-df_stat = evaluate_grid_with_holdout(
-    'statistical', stat_configs, codec, n_samples=5, verbose=True)
-df_stat['method'] = 'statistical'
-df_stat_sorted = df_stat.sort_values(
-    ['text_acc', 'ber_text'], ascending=[False, True])
-print("\nStatistical results — best to worst text recovery:")
-display(df_stat_sorted[['label', 'block_size',
-        'threshold', 'text_acc', 'ber_text']])
 
-# --- Combined top-10 across all four methods ---
-df_all = (
-    pd.concat([df_dct_sorted, df_dwt_sorted, df_ss_sorted,
-              df_stat_sorted], ignore_index=True)
-    .sort_values(['text_acc', 'ber_text'], ascending=[False, True])
+def run_stego_param_sweep_per_ablation(ablation_configs, data_dir, models_dir,
+                                       codec, holdout_dataset, safe_word_list,
+                                       n_samples=5, verbose=False):
+    """
+    For every ablation, loads its saved weights and runs the full stego
+    parameter sweep (DCT, DWT, Spread-Spectrum, Statistical).
+
+    Saves per-ablation CSVs to data/<idx>/param_sweep_<method>.csv and
+    a cross-ablation combined ranking to data/stego_sweep_combined.csv.
+
+    Returns
+    -------
+    df_combined : DataFrame with all results, columns including
+                  ablation_idx, method, label, text_acc, ber_text.
+    df_best     : Best config per method per ablation (top text_acc row).
+    """
+    all_rows = []
+
+    for ablation_idx in range(len(ablation_configs)):
+        cfg = ablation_configs[ablation_idx]
+        print("\n" + "=" * 68)
+        print(f"STEGO SWEEP — ablation {ablation_idx}  "
+              f"(β={cfg['BETA']}, α={cfg['ALPHA']}, "
+              f"LR={cfg['LEARNING_RATE']}, noise_start={cfg['START_NOISE_EP']}, "
+              f"RS={cfg['RS_BYTES']})")
+        print("=" * 68)
+
+        run_models_dir = os.path.join(models_dir, str(ablation_idx))
+        run_data_dir = os.path.join(data_dir, str(ablation_idx))
+        os.makedirs(run_data_dir, exist_ok=True)
+
+        try:
+            _prep, _hide, _reveal = load_weights_from_checkpoint(
+                run_models_dir)
+        except Exception as e:
+            print(
+                f"  [skip] Could not load weights for ablation {ablation_idx}: {e}")
+            continue
+
+        method_frames = []
+        for method_name, grid in [
+            ('dct',              _dct_configs),
+            ('dwt',              _dwt_configs),
+            ('spread_spectrum',  _ss_configs),
+            ('statistical',      _stat_configs),
+        ]:
+            print(
+                f"  Running {method_name} sweep ({len(grid)} configs × {n_samples} samples)...")
+            df = evaluate_grid_with_holdout(
+                method_name, grid, codec,
+                n_samples=n_samples,
+                dataset=holdout_dataset,
+                safe_words=safe_word_list,
+                verbose=verbose,
+                prep_net=_prep,
+                hide_net=_hide,
+                reveal_net=_reveal,
+            )
+            df['method'] = method_name
+            df['ablation_idx'] = ablation_idx
+            df_sorted = df.sort_values(
+                ['text_acc', 'ber_text'], ascending=[False, True])
+            df_sorted.to_csv(
+                os.path.join(run_data_dir, f'param_sweep_{method_name}.csv'),
+                index=False)
+            method_frames.append(df_sorted)
+
+        if not method_frames:
+            continue
+
+        df_abl = pd.concat(method_frames, ignore_index=True)
+        df_abl['ablation_idx'] = ablation_idx
+
+        # Per-ablation combined summary
+        print(f"\n  TOP-5 configs for ablation {ablation_idx} (all methods):")
+        display(
+            df_abl.sort_values(['text_acc', 'ber_text'],
+                               ascending=[False, True])
+            [['method', 'label', 'text_acc', 'ber_text']].head(5)
+        )
+
+        all_rows.append(df_abl)
+
+    if not all_rows:
+        print("No sweep results — have the ablation models been trained yet?")
+        return None, None
+
+    df_combined = pd.concat(all_rows, ignore_index=True)
+
+    # Best config per (method, ablation) — highest text_acc, lowest ber_text
+    df_best = (
+        df_combined
+        .sort_values(['text_acc', 'ber_text'], ascending=[False, True])
+        .groupby(['ablation_idx', 'method'], sort=False)
+        .first()
+        .reset_index()
+    )
+
+    # Cross-ablation ranking: for each config label, mean text_acc across ablations
+    df_cross = (
+        df_combined
+        .groupby(['method', 'label'])[['text_acc', 'ber_text']]
+        .mean()
+        .rename(columns={'text_acc': 'mean_text_acc', 'ber_text': 'mean_ber_text'})
+        .sort_values(['mean_text_acc', 'mean_ber_text'], ascending=[False, True])
+        .reset_index()
+    )
+
+    print("\n" + "=" * 68)
+    print("CROSS-ABLATION STEGO CONFIG RANKING  (mean across all ablations)")
+    print("=" * 68)
+    display(df_cross.head(10))
+
+    # Save combined outputs
+    df_combined.to_csv(os.path.join(
+        data_dir, 'stego_sweep_combined.csv'), index=False)
+    df_best.to_csv(os.path.join(
+        data_dir, 'stego_sweep_best_per_ablation.csv'), index=False)
+    df_cross.to_csv(os.path.join(
+        data_dir, 'stego_sweep_cross_ablation_ranking.csv'), index=False)
+    print(f"\nSaved: stego_sweep_combined.csv, stego_sweep_best_per_ablation.csv, "
+          f"stego_sweep_cross_ablation_ranking.csv → {data_dir}")
+
+    return df_combined, df_best
+
+
+df_sweep_combined, df_sweep_best = run_stego_param_sweep_per_ablation(
+    ABLATION_CONFIGS, data_dir, models_dir,
+    codec, holdout_dataset, safe_word_list,
+    n_samples=5, verbose=False,
 )
-print("\n" + "=" * 62)
-print("COMBINED TOP-10  (dct + dwt + spread_spectrum + statistical)")
-print("=" * 62)
-display(df_all[['method', 'label', 'text_acc', 'ber_text']].head(10))
-
-# Save results
-df_dct_sorted.to_csv(os.path.join(
-    data_dir, 'param_sweep_dct.csv'), index=False)
-df_dwt_sorted.to_csv(os.path.join(
-    data_dir, 'param_sweep_dwt.csv'), index=False)
-df_ss_sorted.to_csv(os.path.join(data_dir, 'param_sweep_ss.csv'), index=False)
-df_stat_sorted.to_csv(os.path.join(
-    data_dir, 'param_sweep_stat.csv'), index=False)
-print(f"\nResults saved to {data_dir}param_sweep_{{dct,dwt,ss,stat}}.csv")
-print("Copy the best config into stego_map and re-run the holdout audit cell.")
