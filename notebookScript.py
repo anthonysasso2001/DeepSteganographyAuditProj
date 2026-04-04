@@ -18,7 +18,6 @@ from dahuffman import HuffmanCodec
 from LSB_Steganography.LSBSteg import LSBSteg
 import string
 import random
-import keras
 from tensorflow.keras import layers, Model
 from sklearn.model_selection import train_test_split
 from datasets import load_dataset
@@ -40,40 +39,50 @@ PAD_CHAR = "\x00"
 CLEAR_BEFORE_TRAIN = True
 BATCH_SIZE = 64
 STEPS = TRAIN_END//2 // BATCH_SIZE + 1
+RS_BYTES = 8  # default; overridden per ablation
+# --- Capacity note for 64×64×3 images ---
+# Bottleneck: StatisticalSteganography(block_size=4) → 256 bits = 32 bytes (fixed_byte_len).
+# After DELIM (9 B) + 2 B overhead, usable payload per RS_BYTES:
+#   RS=4  → ~17 chars  (2-byte error correction)
+#   RS=8  → ~13 chars  (4-byte error correction)   ← sensible default
+#   RS=12 → ~9 chars   (6-byte error correction)
+#   RS=16 → ~5 chars   (8-byte error correction)
+# RS=32/64 eat all capacity and get clamped to 8 by determine_global_limits.
 # Each dict defines one ablation run. Keys override the scalar defaults above.
 ABLATION_CONFIGS = [
-    # idx 0 — baseline: reference point, noise ramps in at halfway
-    # Expected: solid all-round concealment + recovery
+    # idx 0 — baseline: balanced ECC + standard noise schedule
+    # Reference point for all other comparisons.
     {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
-     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 32},
+     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 8},
 
-    # idx 1 — concealment-focused: high beta + late noise + moderate RS
-    # Hypothesis: network learns clean hiding first, noise comes late;
-    # should yield best PSNR / SSIM on cover with acceptable BER
-    {"BETA": 8.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
-     "START_NOISE_EP": 30, "PEAK_NOISE_EP": 50, "RS_BYTES": 32},
+    # idx 1 — low ECC (RS=4): maximises text payload (~17 chars) at cost of correction.
+    # Hypothesis: with 17-char capacity the network can hide more; BER may rise
+    # without error correction headroom.
+    {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
+     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 4},
 
-    # idx 2 — recovery-focused: lower beta + higher alpha + high RS
-    # Hypothesis: heavier reveal loss + 64-byte ECC = best text accuracy / BER
+    # idx 2 — medium ECC (RS=12): tighter payload (~9 chars) but stronger correction.
+    # Hypothesis: smaller target forces cleaner embedding; ECC covers channel noise.
+    {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
+     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 12},
+
+    # idx 3 — recovery-focused: lower beta + higher alpha + RS=8
+    # Hypothesis: heavier reveal loss forces the network to prioritise text recovery;
+    # combined with moderate ECC should yield best BER.
     {"BETA": 3.0, "ALPHA": 2.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
-     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 64},
+     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 8},
 
-    # idx 3 — robustness-first: early noise + high RS
+    # idx 4 — concealment-first, no noise: upper bound on imperceptibility.
+    # RS=4 gives maximum payload room; no augmentation so network learns clean hiding.
+    # Hypothesis: best PSNR/SSIM; BER without noise correction is the cost.
+    {"BETA": 8.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
+     "START_NOISE_EP": 999, "PEAK_NOISE_EP": 999, "RS_BYTES": 4},
+
+    # idx 5 — robustness-first + slow LR: early noise + cosine decay.
     # Hypothesis: aggressive noise from ep 5 forces robust hiding;
-    # RS64 compensates for the harder learning signal
-    {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
-     "START_NOISE_EP": 5, "PEAK_NOISE_EP": 25, "RS_BYTES": 64},
-
-    # idx 4 — slow & stable: halved LR + cosine decay over 50 ep
-    # Hypothesis: fine-grained convergence improves both losses jointly
+    # halved LR gives finer convergence to compensate for the hard signal.
     {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 5e-4,
-     "START_NOISE_EP": 25, "PEAK_NOISE_EP": 50, "RS_BYTES": 32},
-
-    # idx 5 — no noise, high RS: clean training signal, ECC does the work
-    # Hypothesis: without noise the model perfectly hides; RS64 recovers text;
-    # sets an upper-bound on imperceptibility
-    {"BETA": 5.0, "ALPHA": 1.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
-     "START_NOISE_EP": 999, "PEAK_NOISE_EP": 999, "RS_BYTES": 64},
+     "START_NOISE_EP": 5, "PEAK_NOISE_EP": 25, "RS_BYTES": 8},
 ]
 
 # Define your checkpoint directory
@@ -1550,14 +1559,14 @@ def save_history_and_plot(history, data_dir):
     fig.update_xaxes(title_text="Payload Length (chars)", row=2, col=2)
     fig.update_yaxes(title_text="Total Loss", row=2, col=2)
 
-    for col, row in [(1, 1), (1, 2), (2, 1)]:
+    for row, col in [(1, 1), (1, 2), (2, 1)]:
         fig.add_vline(
             x=START_NOISE_EP,
             line_dash="dash",
             line_color="gray",
             annotation_text="Noise Start",
             annotation_position="top left",
-            row=1, col=1
+            row=row, col=col
         )
 
     fig.update_layout(
@@ -1586,7 +1595,9 @@ for ablation_idx in range(len(ABLATION_CONFIGS)):
     START_NOISE_EP = _cfg["START_NOISE_EP"]
     PEAK_NOISE_EP = _cfg["PEAK_NOISE_EP"]
     RS_BYTES = _cfg["RS_BYTES"]
-
+    if RS_BYTES >= fixed_byte_len - 2:
+        RS_BYTES = fixed_byte_len // 2
+    rs = RSCodec(RS_BYTES)
     # Fresh network weights for every run — prevents weight leakage between ablations
     prep_network = build_keras_prep_network()
     hide_network = build_keras_hide_network()
@@ -2013,6 +2024,14 @@ def sanitize_string(s):
 
 # reload just to check saved model works, and so this can be run without fit if needed.
 for ablation_idx in range(len(ABLATION_CONFIGS)):
+
+    # Restore the RS config this ablation was trained with
+    _abl_rs = ABLATION_CONFIGS[ablation_idx]["RS_BYTES"]
+    if _abl_rs >= fixed_byte_len - 2:
+        _abl_rs = fixed_byte_len // 2
+    RS_BYTES = _abl_rs
+    rs = RSCodec(RS_BYTES)
+
     run_models_dir = os.path.join(models_dir, str(ablation_idx))
     run_data_dir = os.path.join(data_dir, str(ablation_idx))
     os.makedirs(os.path.join(run_data_dir, 'visual_results'), exist_ok=True)
