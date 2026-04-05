@@ -1,7 +1,8 @@
 __pycache__/*
 /checkpoints/
 /models/
-/data/
+**/visual_results/
+/data/*/
 # just notes file for myself not relevant to share atm.
 notes.md
 .github/

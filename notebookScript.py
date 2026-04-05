@@ -4,13 +4,14 @@
 
 # %%
 from IPython.display import display
-from nltk.corpus import words
-import nltk
 from tqdm.auto import tqdm
+from IPython.display import clear_output
 import shutil
 from plotly.subplots import make_subplots
 import pandas as pd
 import plotly.graph_objects as go
+from nltk.corpus import words
+import nltk
 import pywt
 from scipy import fft
 from reedsolo import RSCodec
@@ -181,12 +182,14 @@ train_dataset = tf.data.Dataset.from_tensor_slices((train_cover_np, train_secret
     .shuffle(10000) \
     .batch(BATCH_SIZE) \
     .map(lambda c, s: (to_scale(c), to_scale(s)), num_parallel_calls=tf.data.AUTOTUNE) \
+    .cache() \
     .prefetch(tf.data.AUTOTUNE)
 
 # TEST: Batch + Scale (No Shuffle)
 test_dataset = tf.data.Dataset.from_tensor_slices((test_cover_np, test_secret_np)) \
     .batch(BATCH_SIZE) \
     .map(lambda c, s: (to_scale(c), to_scale(s)), num_parallel_calls=tf.data.AUTOTUNE) \
+    .cache() \
     .prefetch(tf.data.AUTOTUNE)
 
 # HOLDOUT: Batch + Scale (No Shuffle)
@@ -395,7 +398,7 @@ def compute_max_chars(capacity_bytes, rs_bytes, delim_len):
 
 class StegoSystem(tf.keras.Model):
     def __init__(self, prep_net, hide_net, reveal_net, stego_tools,
-                 steps_per_epoch, max_safe_chars=12,
+                 steps_per_epoch, word_list=None, max_safe_chars=12,
                  alpha=1.0, beta=10.0,
                  noise_start_epoch=10, noise_peak_epoch=40):
         super(StegoSystem, self).__init__()
@@ -405,6 +408,14 @@ class StegoSystem(tf.keras.Model):
         self.reveal_net = reveal_net
         self.stego_tools = stego_tools
 
+        if word_list:
+            self._words_by_len = {}
+            for w in word_list:
+                self._words_by_len.setdefault(len(w), []).append(w)
+            self._word_len_keys = sorted(self._words_by_len)
+        else:
+            self._words_by_len = None
+            self._word_len_keys = []
         self.max_safe_chars = max(4, max_safe_chars)
         self.beta = beta
         self.alpha = alpha
@@ -433,11 +444,6 @@ class StegoSystem(tf.keras.Model):
             for m in self.methods
         ]
 
-        # self.method_embed_success = [
-        #     tf.keras.metrics.Mean(name=f"embed_success_{m}")
-        #     for m in self.methods
-        # ]
-
         self.psnr_c_tracker = tf.keras.metrics.Mean(name="cover_psnr")
         self.ssim_s_tracker = tf.keras.metrics.Mean(name="secret_ssim")
         self.total_loss_tracker = tf.keras.metrics.Mean(name="loss")
@@ -445,8 +451,6 @@ class StegoSystem(tf.keras.Model):
         self.s_loss_tracker = tf.keras.metrics.Mean(name="secret_loss")
         self.noise_prob_metric = tf.keras.metrics.Mean(name="noise_prob")
         self.payload_len_tracker = tf.keras.metrics.Mean(name="payload_len")
-        # self.embed_success_tracker = tf.keras.metrics.Mean(
-        # name="embed_success")
 
     @property
     def metrics(self):
@@ -458,7 +462,6 @@ class StegoSystem(tf.keras.Model):
             self.s_loss_tracker,
             self.noise_prob_metric,
             self.payload_len_tracker,
-            # self.embed_success_tracker
         ]
 
         # + list(self.method_embed_success)
@@ -518,7 +521,7 @@ class StegoSystem(tf.keras.Model):
             # Curriculum scaling
             curriculum_max = max(1, int(progress_val * max_chars))
 
-            for _ in range(10):
+            for _ in range(2):
 
                 # Beta distribution to bias toward larger payloads as curriculum progresses
                 sampled = np.random.beta(2, 1)
@@ -528,10 +531,19 @@ class StegoSystem(tf.keras.Model):
                 # ✅ Clamp to valid range
                 random_len = max(1, min(random_len, max_chars))
 
-                train_text = ''.join(random.choices(
-                    string.ascii_letters + string.digits,
-                    k=random_len
-                ))
+                if self._words_by_len:
+                    # Pick the largest available bucket <= curriculum_max
+                    valid_keys = [
+                        k for k in self._word_len_keys if k <= random_len]
+                    if not valid_keys:
+                        valid_keys = [self._word_len_keys[0]]
+                    bucket_len = valid_keys[-1]
+                    train_text = random.choice(self._words_by_len[bucket_len])
+                else:
+                    train_text = ''.join(random.choices(
+                        string.ascii_letters + string.digits,
+                        k=random_len
+                    ))
 
                 try:
                     bits = prepare_payload(
@@ -608,8 +620,6 @@ class StegoSystem(tf.keras.Model):
             avg_success.set_shape(())
             attempted_flag.set_shape(())
             self.payload_len_tracker.update_state(avg_len)
-            # self.embed_success_tracker.update_state(
-            #     avg_success, sample_weight=attempted_flag)
 
             p_out = self.prep_net(augmented_secret, training=True)
             h_out = self.hide_net([cover, p_out], training=True)
@@ -655,15 +665,6 @@ class StegoSystem(tf.keras.Model):
             ]
         )
 
-        # tf.switch_case(
-        #     method_idx_scalar,
-        #     branch_fns=[
-        #         lambda i=i: self.method_embed_success[i].update_state(
-        #             avg_success, sample_weight=attempted_flag)
-        #         for i in range(len(self.methods))
-        #     ]
-        # )
-
         self.total_loss_tracker.update_state(total_loss)
         self.c_loss_tracker.update_state(c_loss)
         self.s_loss_tracker.update_state(s_loss)
@@ -706,8 +707,6 @@ class StegoSystem(tf.keras.Model):
         attempted_flag = tf.reshape(attempted_flag, [])
 
         self.payload_len_tracker.update_state(avg_len)
-        # self.embed_success_tracker.update_state(
-        #     avg_success, sample_weight=attempted_flag)
 
         # Forward pass
         p_out = self.prep_net(augmented_secret, training=False)
@@ -750,15 +749,6 @@ class StegoSystem(tf.keras.Model):
                 for i in range(len(self.methods))
             ]
         )
-
-        # tf.switch_case(
-        #     method_idx_scalar,
-        #     branch_fns=[
-        #         lambda i=i: self.method_embed_success[i].update_state(
-        #             avg_success, sample_weight=attempted_flag)
-        #         for i in range(len(self.methods))
-        #     ]
-        # )
 
         # Loss metrics
         self.total_loss_tracker.update_state(total_loss)
@@ -1186,30 +1176,52 @@ class StatisticalSteganography:
         return decode_payload(extracted_bits[:total_blocks], codec, expected_len=self.expected_len)
 
 
-training_corpus = string.ascii_letters + \
-    string.digits + string.punctuation + " \0"
-
-
-codec = HuffmanCodec.from_data(training_corpus)
-
-
-def determine_global_limits(stego_classes, rs_bytes, image_shape=(64, 64, 3)):
+def find_max_supported_word(word_list, codec, fixed_byte_len, use_header=False):
     """
-    Computes TRUE global bit limit across ALL methods.
+    Finds the longest word in the list that fits within the bit-budget.
+    Returns the word and its bit length.
     """
+    max_bits = fixed_byte_len * 8
+    supported_words = []
 
-    raw_capacities = []
+    for word in word_list:
+        try:
+            bits = prepare_payload(word, codec,
+                                   expected_len=fixed_byte_len)
 
-    for name, cls in stego_classes.items():
-        if cls == SpreadSpectrumSteganography:
-            temp_obj = cls(use_header=False, expected_len=64, max_bits=4096)
-        else:
-            temp_obj = cls(use_header=False, expected_len=64)
-        raw_capacities.append(temp_obj.get_capacity(image_shape))
+            if len(bits) <= max_bits:
+                supported_words.append((word, len(bits)))
+        except Exception:
+            continue  # Skip words with characters not in your codec
 
-    # ✅ GLOBAL BIT LIMIT
-    min_bits = min(raw_capacities)
+    if not supported_words:
+        return None, 0
 
+    # Sort by character length, then bit length
+    supported_words.sort(key=lambda x: (len(x[0]), x[1]), reverse=True)
+
+    best_word, bit_size = supported_words[0]
+    print(f"✅ Max Capacity Check:")
+    print(f"   - Target Bit Budget: {max_bits} bits ({fixed_byte_len} bytes)")
+    print(
+        f"   - Longest Supported Word: '{best_word}' ({len(best_word)} chars)")
+    print(
+        f"   - Bit Utilization: {bit_size}/{max_bits} ({round(bit_size/max_bits*100, 1)}%)")
+
+    return best_word, len(best_word)
+
+
+def determine_global_limits(stego_instances, rs_bytes, image_shape=(64, 64, 3)):
+    """
+    Computes TRUE global bit limit from actual stego_map instances (respects rep,
+    block_size, etc.), then patches expected_len (and max_bits for SpreadSpectrum)
+    on every instance in-place.
+    """
+    raw_capacities = {
+        name: obj.get_capacity(image_shape)
+        for name, obj in stego_instances.items()
+    }
+    min_bits = min(raw_capacities.values())
     fixed_bytes = min_bits // 8
 
     # Ensure RS doesn't eat everything
@@ -1218,32 +1230,14 @@ def determine_global_limits(stego_classes, rs_bytes, image_shape=(64, 64, 3)):
 
     max_chars = max(1, fixed_bytes - rs_bytes - len(DELIM) - 2)
 
+    # Patch expected_len (and max_bits for SpreadSpectrum) on every instance
+    for obj in stego_instances.values():
+        obj.expected_len = fixed_bytes
+    ss = stego_instances.get("spread_spectrum")
+    if ss is not None:
+        ss.max_bits = fixed_bytes * 8
+
     return fixed_bytes, max_chars, rs_bytes
-
-
-stego_class_references = {
-    "lsb": LSBSteganography,
-    "dct": GridDCTSteganography,
-    "dwt": DWTSteganography,
-    "spread_spectrum": SpreadSpectrumSteganography,
-    "statistical": StatisticalSteganography
-}
-
-fixed_byte_len, max_safe_word_len, RS_BYTES = determine_global_limits(
-    stego_class_references, RS_BYTES)
-
-if RS_BYTES >= fixed_byte_len - 2:
-    RS_BYTES = fixed_byte_len // 2
-    print(f"⚠️ Adjusted RS_BYTES to {RS_BYTES} to allow text room.")
-rs = RSCodec(RS_BYTES)
-
-stego_map = {
-    "lsb": LSBSteganography(use_header=False, expected_len=fixed_byte_len),
-    "dct": GridDCTSteganography(delta=200.0, block_size=4, rep=5, use_header=False, expected_len=fixed_byte_len),
-    "dwt": DWTSteganography(delta=150.0, band='LH', rep=5, use_header=False, expected_len=fixed_byte_len),
-    "spread_spectrum": SpreadSpectrumSteganography(gain=80.0, max_bits=fixed_byte_len * 8, use_header=False, expected_len=fixed_byte_len),
-    "statistical": StatisticalSteganography(block_size=4, threshold=60.0, use_header=False, expected_len=fixed_byte_len)
-}
 
 
 def quick_stego_map_sanity(stego_objects, codec, image_shape=(64, 64, 3), sample_text='audit42'):
@@ -1268,6 +1262,63 @@ def quick_stego_map_sanity(stego_objects, codec, image_shape=(64, 64, 3), sample
             print(f"{name:<20} | {'-':<12} | {'-':<13} | ERROR: {e}")
 
     print('-' * 74)
+
+# design codex based on cornell list of eng letter freq, and put word list here to use in training
+
+
+eng_freq = {
+    'e': 21912, 't': 16587, 'a': 14810, 'o': 14003, 'i': 13318,
+    'n': 12666, 's': 11450, 'r': 10977, 'h': 10795, 'd': 7874,
+    'l': 7253, 'u': 5246, 'c': 4943, 'm': 4761, 'f': 4200, 'y': 3853,
+    'w': 3819, 'g': 3693, 'p': 3316, 'b': 2715, 'v': 2019, 'k': 1257,
+    'x': 315, 'q': 205, 'j': 188, 'z': 128,
+}
+
+
+freq_map = {}
+for ch in string.ascii_lowercase:
+    freq_map[ch] = eng_freq.get(ch, 1)
+for ch in string.ascii_uppercase:
+    freq_map[ch] = max(1, eng_freq.get(ch.lower(), 1) // 3)  # caps less common
+for ch in string.digits + string.punctuation + " \0":
+    freq_map[ch] = 5  # neutral weight, above rare letters
+
+codec = HuffmanCodec.from_frequencies(freq_map)
+
+
+# Build stego_map first with a placeholder expected_len (any non-None value satisfies
+# LSBSteganography's guard). determine_global_limits calls get_capacity() on the real
+# instances so rep, block_size, etc. are correctly accounted for, then patches
+# expected_len (and max_bits for SpreadSpectrum) back onto each object in-place.
+
+stego_map = {
+    "lsb": LSBSteganography(use_header=False, expected_len=64),
+    "dct": GridDCTSteganography(delta=200.0, block_size=4, rep=3, use_header=False, expected_len=64),
+    "dwt": DWTSteganography(delta=150.0, band='LH', rep=4, use_header=False, expected_len=64),
+    "spread_spectrum": SpreadSpectrumSteganography(gain=80.0, max_bits=64 * 8, use_header=False, expected_len=64),
+    "statistical": StatisticalSteganography(block_size=4, threshold=60.0, use_header=False, expected_len=64)
+}
+
+
+fixed_byte_len, max_safe_word_len, RS_BYTES = determine_global_limits(
+    stego_map, RS_BYTES)
+
+if RS_BYTES >= fixed_byte_len - 2:
+    RS_BYTES = fixed_byte_len // 2
+    print(f"⚠️ Adjusted RS_BYTES to {RS_BYTES} to allow text room.")
+rs = RSCodec(RS_BYTES)
+
+try:
+    word_list = words.words()
+except:
+    nltk.download('words')
+    from nltk.corpus import words
+    word_list = [w.lower() for w in words.words() if w.isalpha()]
+
+max_word, max_char_len = find_max_supported_word(
+    word_list, codec, fixed_byte_len)
+max_char_len -= 2
+safe_word_list = [w for w in word_list if len(w) <= max_char_len]
 
 
 quick_stego_map_sanity(stego_map, codec)
@@ -1512,15 +1563,16 @@ def save_history_and_plot(history, data_dir):
     fig.update_xaxes(title_text="Epoch", row=2, col=2)
 
     # ── Noise-start marker across all panels ─────────────────────────────
-    for row, col in [(1, 1), (1, 2), (2, 1), (2, 2)]:
-        fig.add_vline(
-            x=START_NOISE_EP,
-            line_dash="dash",
-            line_color="rgba(100,100,100,0.35)",
-            annotation_text="Noise↑" if (row == 1 and col == 1) else "",
-            annotation_position="top right",
-            row=row, col=col,
-        )
+    if START_NOISE_EP <= epochs[-1]:
+        for row, col in [(1, 1), (1, 2), (2, 1), (2, 2)]:
+            fig.add_vline(
+                x=START_NOISE_EP,
+                line_dash="dash",
+                line_color="rgba(100,100,100,0.35)",
+                annotation_text="Noise↑" if (row == 1 and col == 1) else "",
+                annotation_position="top right",
+                row=row, col=col,
+            )
 
     # ── Layout ────────────────────────────────────────────────────────────
     fig.update_layout(
@@ -1547,7 +1599,6 @@ def save_history_and_plot(history, data_dir):
 
 
 # %%
-
 
 for ablation_idx in range(len(ABLATION_CONFIGS)):
     _cfg = ABLATION_CONFIGS[ablation_idx]
@@ -1598,6 +1649,7 @@ for ablation_idx in range(len(ABLATION_CONFIGS)):
         reveal_net=reveal_network,
         stego_tools=tools,
         steps_per_epoch=STEPS,
+        word_list=safe_word_list,
         max_safe_chars=max_safe_word_len,
         alpha=ALPHA,
         beta=BETA,
@@ -1625,10 +1677,13 @@ for ablation_idx in range(len(ABLATION_CONFIGS)):
         verbose=1,
     )
 
-    callbacks = [checkpoint_callback,
-                 SaveEveryTen(checkpoint_dir=run_ckpt_dir, max_to_keep=3),
-
-                 ]
+    callbacks = [
+        checkpoint_callback,
+        SaveEveryTen(checkpoint_dir=run_ckpt_dir, max_to_keep=3),
+        # tf.keras.callbacks.EarlyStopping(
+        #     monitor='val_loss', patience=40, restore_best_weights=False
+        # ),
+    ]
 
     # Train using Keras Fit
     history = model.fit(
@@ -1638,6 +1693,7 @@ for ablation_idx in range(len(ABLATION_CONFIGS)):
         callbacks=callbacks,
         verbose=1
     )
+    clear_output(wait=True)
 
     model.prep_net.save(os.path.join(run_models_dir, 'prep_model.keras'))
     model.hide_net.save(os.path.join(run_models_dir, 'hide_model.keras'))
@@ -1727,41 +1783,6 @@ def acc_txt(secret, revealed):
         # Divide by the original length to get the true accuracy
         text_acc = match_count / len(secret)
     return text_acc
-
-
-def find_max_supported_word(word_list, codec, fixed_byte_len, use_header=False):
-    """
-    Finds the longest word in the list that fits within the bit-budget.
-    Returns the word and its bit length.
-    """
-    max_bits = fixed_byte_len * 8
-    supported_words = []
-
-    for word in word_list:
-        try:
-            bits = prepare_payload(word, codec,
-                                   expected_len=fixed_byte_len)
-
-            if len(bits) <= max_bits:
-                supported_words.append((word, len(bits)))
-        except Exception:
-            continue  # Skip words with characters not in your codec
-
-    if not supported_words:
-        return None, 0
-
-    # Sort by character length, then bit length
-    supported_words.sort(key=lambda x: (len(x[0]), x[1]), reverse=True)
-
-    best_word, bit_size = supported_words[0]
-    print(f"✅ Max Capacity Check:")
-    print(f"   - Target Bit Budget: {max_bits} bits ({fixed_byte_len} bytes)")
-    print(
-        f"   - Longest Supported Word: '{best_word}' ({len(best_word)} chars)")
-    print(
-        f"   - Bit Utilization: {bit_size}/{max_bits} ({round(bit_size/max_bits*100, 1)}%)")
-
-    return best_word, len(best_word)
 
 
 def check_audit_viability(text, codec, stego_objects, image_shape=(64, 64, 3), rs_overhead=RS_BYTES):
@@ -1968,14 +1989,6 @@ def plot_final_summary(metrics_list, save_path):
 
 
 # %%
-
-try:
-    word_list = words.words()
-except:
-    nltk.download('words')
-    # need to reimport if not downloaded
-    from nltk.corpus import words
-    word_list = [w.lower() for w in words.words() if w.isalpha()]
 
 
 def sanitize_string(s):
@@ -2741,6 +2754,10 @@ def run_stego_param_sweep_per_ablation(ablation_configs, data_dir, models_dir,
 
         df_abl = pd.concat(method_frames, ignore_index=True)
         df_abl['ablation_idx'] = ablation_idx
+
+        del _prep, _hide, _reveal, method_frames
+        tf.keras.backend.clear_session()
+        gc.collect()
 
         # Per-ablation combined summary
         print(f"\n  TOP-5 configs for ablation {ablation_idx} (all methods):")
