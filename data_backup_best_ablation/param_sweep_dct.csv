@@ -1,0 +1,7 @@
+delta,block_size,rep,label,ber_text,text_acc,method,ablation_idx
+300.0,4,1,dct_d300_b4_rep1,0.8333333333333334,0.16666666666666666,dct,2
+150.0,4,1,dct_d150_b4_rep1,0.9,0.1,dct,2
+200.0,4,1,dct_d200_b4_rep1,0.9,0.1,dct,2
+200.0,8,1,dct_d200_b8_rep1,1.0,0.0,dct,2
+300.0,8,1,dct_d300_b8_rep1,1.0,0.0,dct,2
+500.0,4,1,dct_d500_b4_rep1,1.0,0.0,dct,2
