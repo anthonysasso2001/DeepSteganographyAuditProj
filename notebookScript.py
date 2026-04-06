@@ -2698,30 +2698,22 @@ _dwt_configs = [
 ]
 
 _ss_configs = [
-    # Sub-floor probes — densely cover the gap below the confirmed minimum (g150).
-    # g50 is an extreme lower bound; if it passes, the method is extremely robust.
-    # g70/g90 are the primary interest range: large enough to survive neural
-    # smoothing but small enough to meaningfully reduce cover distortion vs g150.
-    # g110/g130 are safety fallbacks in case the floor is closer to 150 than expected.
-    {'gain': 50.0,  'label': 'ss_g50'},
-    {'gain': 70.0,  'label': 'ss_g70'},
-    {'gain': 90.0,  'label': 'ss_g90'},
+    {'gain': 92.0, 'label': 'ss_g92'},
+    {'gain': 96.0, 'label': 'ss_g96'},
+    {'gain': 100.0, 'label': 'ss_g100'},
+    {'gain': 104.0, 'label': 'ss_g104'},
+    {'gain': 108.0, 'label': 'ss_g108'},
     {'gain': 110.0, 'label': 'ss_g110'},
-    {'gain': 130.0, 'label': 'ss_g130'},
+    {'gain': 112.0, 'label': 'ss_g112'},
 ]
 
-_stat_configs = [
-    # Sub-floor probes — densely cover the gap below the confirmed minimum (t80).
-    # t20 is an aggressive lower bound to characterise the failure mode.
-    # t35/t50 are the primary interest range.
-    # t60/t70 are safety fallbacks bridging to the confirmed-working t80.
-    # All use block_size=4 — block_size=8 always fails due to capacity overflow
-    # (64 bits available vs 256 bits required), not network robustness.
-    {'block_size': 4, 'threshold': 20.0, 'label': 'stat_b4_t20'},
-    {'block_size': 4, 'threshold': 35.0, 'label': 'stat_b4_t35'},
-    {'block_size': 4, 'threshold': 50.0, 'label': 'stat_b4_t50'},
+stat_configs = [
+    {'block_size': 4, 'threshold': 52.0, 'label': 'stat_b4_t52'},
+    {'block_size': 4, 'threshold': 54.0, 'label': 'stat_b4_t54'},
+    {'block_size': 4, 'threshold': 56.0, 'label': 'stat_b4_t56'},
+    {'block_size': 4, 'threshold': 58.0, 'label': 'stat_b4_t58'},
     {'block_size': 4, 'threshold': 60.0, 'label': 'stat_b4_t60'},
-    {'block_size': 4, 'threshold': 70.0, 'label': 'stat_b4_t70'},
+    {'block_size': 4, 'threshold': 62.0, 'label': 'stat_b4_t62'},
 ]
 
 
