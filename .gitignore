@@ -2,6 +2,7 @@ __pycache__/*
 /checkpoints/
 /models/
 **/visual_results/
+!data_backup/**
 /data/*/
 # just notes file for myself not relevant to share atm.
 notes.md
