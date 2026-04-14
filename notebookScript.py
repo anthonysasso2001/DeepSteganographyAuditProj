@@ -33,8 +33,8 @@ TRAIN_END = 15000
 TEST_SIZE = int(TRAIN_END * 0.20)
 HOLDOUT_END = TRAIN_END + TEST_SIZE
 # secret text vars
-MAX_CHARS = 20
-DELIM = "|||END|||"
+MAX_CHARS = 16
+DELIM = "|END|"
 PAD_CHAR = "\x00"
 # training vars
 CLEAR_BEFORE_TRAIN = True
@@ -58,6 +58,13 @@ ABLATION_CONFIGS = [
     # version of best ablation but with no noise to test benefits of adversarial training
     {"BETA": 3.0, "ALPHA": 3.0, "EPOCHS": 100, "LEARNING_RATE": 1e-3,
      "START_NOISE_EP": 999, "PEAK_NOISE_EP": 999, "RS_BYTES": 8},
+
+    # also try different variations of RS
+    {"BETA": 3.0, "ALPHA": 3.0, "EPOCHS": 100, "LEARNING_RATE": 1e-3,
+     "START_NOISE_EP": 10, "PEAK_NOISE_EP": 45, "RS_BYTES": 16},
+
+    {"BETA": 3.0, "ALPHA": 3.0, "EPOCHS": 100, "LEARNING_RATE": 1e-3,
+     "START_NOISE_EP": 10, "PEAK_NOISE_EP": 45, "RS_BYTES": 32},
 
     # also create variations with the same 10%-45% noise ration for 50,150,200 epochs
     {"BETA": 3.0, "ALPHA": 3.0, "EPOCHS": 50, "LEARNING_RATE": 1e-3,
@@ -493,6 +500,15 @@ class StegoSystem(tf.keras.Model):
                 RS_BYTES,
                 delim_len
             )
+            if self._word_len_keys:
+                valid_word_lens = [
+                    k for k in self._word_len_keys if k <= max_chars]
+                if not valid_word_lens:
+                    stego_batch.append(img)
+                    payload_lengths.append(0)
+                    success_flags.append(0.0)
+                    continue
+                max_chars = valid_word_lens[-1]
 
             # Curriculum scaling
             curriculum_max = max(1, int(progress_val * max_chars))
@@ -507,26 +523,44 @@ class StegoSystem(tf.keras.Model):
                 # ✅ Clamp to valid range
                 random_len = max(1, min(random_len, max_chars))
 
-                if self._words_by_len:
-                    # Pick the largest available bucket <= curriculum_max
-                    valid_keys = [
-                        k for k in self._word_len_keys if k <= random_len]
-                    if not valid_keys:
-                        valid_keys = [self._word_len_keys[0]]
-                    bucket_len = valid_keys[-1]
-                    train_text = random.choice(self._words_by_len[bucket_len])
-                else:
-                    train_text = ''.join(random.choices(
-                        string.ascii_letters + string.digits,
-                        k=random_len
-                    ))
-
                 try:
-                    bits = prepare_payload(
-                        train_text,
-                        codec,
-                        expected_len=effective_expected_len
-                    )
+                    bits = None
+
+                    if self._words_by_len:
+                        valid_keys = [
+                            k for k in self._word_len_keys if k <= random_len]
+                        if not valid_keys:
+                            valid_keys = [self._word_len_keys[0]]
+
+                        train_text = None
+                        for bucket_len in reversed(valid_keys):
+                            candidate = random.choice(
+                                self._words_by_len[bucket_len])
+                            try:
+                                candidate_bits = prepare_payload(
+                                    candidate,
+                                    codec,
+                                    expected_len=effective_expected_len
+                                )
+                                if len(candidate_bits) <= capacity_bits:
+                                    train_text = candidate
+                                    bits = candidate_bits
+                                    break
+                            except Exception:
+                                continue
+
+                        if train_text is None:
+                            continue
+                    else:
+                        train_text = ''.join(random.choices(
+                            string.ascii_letters + string.digits,
+                            k=random_len
+                        ))
+                        bits = prepare_payload(
+                            train_text,
+                            codec,
+                            expected_len=effective_expected_len
+                        )
 
                     if len(bits) <= capacity_bits:
                         s_img = tool.embed(img, train_text, codec)
@@ -1187,6 +1221,29 @@ def find_max_supported_word(word_list, codec, fixed_byte_len, use_header=False):
     return best_word, len(best_word)
 
 
+def build_safe_word_list(word_list, codec, fixed_byte_len):
+    """
+    Returns only words that can be fully encoded by prepare_payload at
+    the current fixed_byte_len/RS_BYTES settings.
+    """
+    safe_words = []
+    max_bits = fixed_byte_len * 8
+
+    for word in word_list:
+        try:
+            bits = prepare_payload(word, codec, expected_len=fixed_byte_len)
+            if len(bits) <= max_bits:
+                safe_words.append(word)
+        except Exception:
+            continue
+
+    if not safe_words:
+        return [], 1
+
+    max_len = max(len(w) for w in safe_words)
+    return safe_words, max_len
+
+
 def determine_global_limits(stego_instances, rs_bytes, image_shape=(64, 64, 3)):
     """
     Computes TRUE global bit limit from actual stego_map instances (respects rep,
@@ -1267,17 +1324,97 @@ codec = HuffmanCodec.from_frequencies(freq_map)
 # instances so rep, block_size, etc. are correctly accounted for, then patches
 # expected_len (and max_bits for SpreadSpectrum) back onto each object in-place.
 
-stego_map = {
-    "lsb": LSBSteganography(use_header=False, expected_len=64),
-    "dct": GridDCTSteganography(delta=300.0, block_size=4, rep=1, use_header=False, expected_len=64),
-    "dwt": DWTSteganography(delta=250.0, band='LH', rep=1, use_header=False, expected_len=64),
-    "spread_spectrum": SpreadSpectrumSteganography(gain=110.0, max_bits=64 * 8, use_header=False, expected_len=64),
-    "statistical": StatisticalSteganography(block_size=4, threshold=60.0, use_header=False, expected_len=64)
-}
+# A/B (or N-way) stego-map ablations. Add new entries here to expand beyond A/B.
+STEGO_MAP_ABLATIONS = [
+    {
+        "tag": "commented_baseline",
+        "dct_delta": 200.0,
+        "dct_block_size": 4,
+        "dct_rep": 3,
+        "dwt_delta": 150.0,
+        "dwt_band": "LH",
+        "dwt_rep": 4,
+        "ss_gain": 80.0,
+        "stat_block_size": 4,
+        "stat_threshold": 60.0,
+    },
+    {
+        "tag": "current_uncommented",
+        "dct_delta": 300.0,
+        "dct_block_size": 4,
+        "dct_rep": 1,
+        "dwt_delta": 250.0,
+        "dwt_band": "LH",
+        "dwt_rep": 1,
+        "ss_gain": 110.0,
+        "stat_block_size": 4,
+        "stat_threshold": 60.0,
+    },
+]
 
+# A/B default: run both stego-map ablations against model ablation 0.
+# Add more model indices here when you want broader sweeps.
+ACTIVE_STEGO_MAP_ABLATIONS = [0, 1]
+ACTIVE_MODEL_ABLATIONS = [0]
+
+
+def build_stego_map_from_ablation(cfg):
+    return {
+        "lsb": LSBSteganography(use_header=False, expected_len=64),
+        "dct": GridDCTSteganography(
+            delta=cfg["dct_delta"],
+            block_size=cfg["dct_block_size"],
+            rep=cfg["dct_rep"],
+            use_header=False,
+            expected_len=64,
+        ),
+        "dwt": DWTSteganography(
+            delta=cfg["dwt_delta"],
+            band=cfg["dwt_band"],
+            rep=cfg["dwt_rep"],
+            use_header=False,
+            expected_len=64,
+        ),
+        "spread_spectrum": SpreadSpectrumSteganography(
+            gain=cfg["ss_gain"],
+            max_bits=64 * 8,
+            use_header=False,
+            expected_len=64,
+        ),
+        "statistical": StatisticalSteganography(
+            block_size=cfg["stat_block_size"],
+            threshold=cfg["stat_threshold"],
+            use_header=False,
+            expected_len=64,
+        ),
+    }
+
+
+def build_run_plan(active_map_idxs, active_model_idxs, num_maps, num_models):
+    valid_maps = [i for i in active_map_idxs if 0 <= i < num_maps]
+    valid_models = [i for i in active_model_idxs if 0 <= i < num_models]
+    return [(m_idx, a_idx) for m_idx in valid_maps for a_idx in valid_models]
+
+
+RUN_PLAN = build_run_plan(
+    ACTIVE_STEGO_MAP_ABLATIONS,
+    ACTIVE_MODEL_ABLATIONS,
+    len(STEGO_MAP_ABLATIONS),
+    len(ABLATION_CONFIGS),
+)
+
+if not RUN_PLAN:
+    raise RuntimeError(
+        "RUN_PLAN is empty. Check ACTIVE_STEGO_MAP_ABLATIONS / ACTIVE_MODEL_ABLATIONS.")
+
+# Bootstrap globals from the first planned run so downstream helpers have valid state.
+_first_map_idx, _first_ablation_idx = RUN_PLAN[0]
+_first_map_cfg = STEGO_MAP_ABLATIONS[_first_map_idx]
+_first_model_cfg = ABLATION_CONFIGS[_first_ablation_idx]
+stego_map = build_stego_map_from_ablation(_first_map_cfg)
 
 fixed_byte_len, max_safe_word_len, RS_BYTES = determine_global_limits(
-    stego_map, RS_BYTES)
+    stego_map, _first_model_cfg["RS_BYTES"])
 
 if RS_BYTES >= fixed_byte_len - 2:
     RS_BYTES = fixed_byte_len // 2
@@ -1293,8 +1430,8 @@ except:
 
 max_word, max_char_len = find_max_supported_word(
     word_list, codec, fixed_byte_len)
-max_char_len -= 2
-safe_word_list = [w for w in word_list if len(w) <= max_char_len]
+safe_word_list, max_safe_word_len = build_safe_word_list(
+    word_list, codec, fixed_byte_len)
 
 
 quick_stego_map_sanity(stego_map, codec)
@@ -1576,27 +1713,42 @@ def save_history_and_plot(history, data_dir):
 
 # %%
 
-for ablation_idx in range(len(ABLATION_CONFIGS)):
+for stego_map_ablation_idx, ablation_idx in RUN_PLAN:
     _cfg = ABLATION_CONFIGS[ablation_idx]
+    _stego_cfg = STEGO_MAP_ABLATIONS[stego_map_ablation_idx]
+    stego_tag = _stego_cfg["tag"]
+
+    stego_map = build_stego_map_from_ablation(_stego_cfg)
+
+    fixed_byte_len, max_safe_word_len, _run_rs = determine_global_limits(
+        stego_map, _cfg["RS_BYTES"])
+
     BETA = _cfg["BETA"]
     ALPHA = _cfg["ALPHA"]
     EPOCHS = _cfg["EPOCHS"]
     LEARNING_RATE = _cfg["LEARNING_RATE"]
     START_NOISE_EP = _cfg["START_NOISE_EP"]
     PEAK_NOISE_EP = _cfg["PEAK_NOISE_EP"]
-    RS_BYTES = _cfg["RS_BYTES"]
+    RS_BYTES = _run_rs
     if RS_BYTES >= fixed_byte_len - 2:
         RS_BYTES = fixed_byte_len // 2
     rs = RSCodec(RS_BYTES)
+
+    run_safe_word_list, run_max_safe_word_len = build_safe_word_list(
+        word_list, codec, fixed_byte_len)
+    if not run_safe_word_list:
+        raise RuntimeError(
+            f"No safe words available for ablation {ablation_idx} with RS_BYTES={RS_BYTES}"
+        )
     # Fresh network weights for every run — prevents weight leakage between ablations
     prep_network = build_keras_prep_network()
     hide_network = build_keras_hide_network()
     reveal_network = build_keras_reveal_network()
 
     # Per-run output directories
-    run_ckpt_dir = os.path.join(checkpoint_dir, str(ablation_idx))
-    run_models_dir = os.path.join(models_dir, str(ablation_idx))
-    run_data_dir = os.path.join(data_dir, str(ablation_idx))
+    run_ckpt_dir = os.path.join(checkpoint_dir, stego_tag, str(ablation_idx))
+    run_models_dir = os.path.join(models_dir, stego_tag, str(ablation_idx))
+    run_data_dir = os.path.join(data_dir, stego_tag, str(ablation_idx))
     for _d in (run_ckpt_dir, run_models_dir, run_data_dir):
         os.makedirs(_d, exist_ok=True)
 
@@ -1625,8 +1777,8 @@ for ablation_idx in range(len(ABLATION_CONFIGS)):
         reveal_net=reveal_network,
         stego_tools=tools,
         steps_per_epoch=STEPS,
-        word_list=safe_word_list,
-        max_safe_chars=max_safe_word_len,
+        word_list=run_safe_word_list,
+        max_safe_chars=run_max_safe_word_len,
         alpha=ALPHA,
         beta=BETA,
         noise_start_epoch=START_NOISE_EP,
@@ -1636,7 +1788,7 @@ for ablation_idx in range(len(ABLATION_CONFIGS)):
     model.build([(None, 64, 64, 3), (None, 64, 64, 3)])
     model.compile(optimizer=optimizer, jit_compile=False)
     # Execute the plot but only on first ablation cause they won't be different logically
-    if ablation_idx == 0:
+    if (stego_map_ablation_idx, ablation_idx) == RUN_PLAN[0]:
         model.summary()
         plot_steganography_graph(
             "steganography_logical_flow.pdf", False, 300, False)
@@ -1960,7 +2112,7 @@ def plot_final_summary(metrics_list, save_path):
     fig.update_yaxes(title_text="Rate / Accuracy",
                      range=[0, 1.1], row=2, col=2)
 
-    fig.write_image(save_path)
+    fig.write_image(save_path, format="pdf")
     fig.show()
 
 
@@ -1975,17 +2127,32 @@ def sanitize_string(s):
 
 
 # reload just to check saved model works, and so this can be run without fit if needed.
-for ablation_idx in range(len(ABLATION_CONFIGS)):
+for stego_map_ablation_idx, ablation_idx in RUN_PLAN:
+
+    _cfg = ABLATION_CONFIGS[ablation_idx]
+    _stego_cfg = STEGO_MAP_ABLATIONS[stego_map_ablation_idx]
+    stego_tag = _stego_cfg["tag"]
+
+    stego_map = build_stego_map_from_ablation(_stego_cfg)
+    fixed_byte_len, max_safe_word_len, _run_rs = determine_global_limits(
+        stego_map, _cfg["RS_BYTES"])
 
     # Restore the RS config this ablation was trained with
-    _abl_rs = ABLATION_CONFIGS[ablation_idx]["RS_BYTES"]
+    _abl_rs = _run_rs
     if _abl_rs >= fixed_byte_len - 2:
         _abl_rs = fixed_byte_len // 2
     RS_BYTES = _abl_rs
     rs = RSCodec(RS_BYTES)
 
-    run_models_dir = os.path.join(models_dir, str(ablation_idx))
-    run_data_dir = os.path.join(data_dir, str(ablation_idx))
+    holdout_safe_word_list, holdout_max_char_len = build_safe_word_list(
+        word_list, codec, fixed_byte_len)
+    if not holdout_safe_word_list:
+        raise RuntimeError(
+            f"No safe holdout words available for ablation {ablation_idx} with RS_BYTES={RS_BYTES}"
+        )
+
+    run_models_dir = os.path.join(models_dir, stego_tag, str(ablation_idx))
+    run_data_dir = os.path.join(data_dir, stego_tag, str(ablation_idx))
     os.makedirs(os.path.join(run_data_dir, 'visual_results'), exist_ok=True)
     prep_network, hide_network, reveal_network = load_weights_from_checkpoint(
         run_models_dir
@@ -2002,19 +2169,12 @@ for ablation_idx in range(len(ABLATION_CONFIGS)):
     pbar = tqdm(enumerate(sample_dataset), total=num_samples,
                 desc="Audit Progress", unit="img")
 
-    # Filter for medium-length words to ensure they fit your codec capacity
-    max_word, max_char_len = find_max_supported_word(
-        word_list, codec, fixed_byte_len)
-    # subtract 2 bytes for added safety
-    max_char_len -= 2
-    safe_word_list = [w for w in word_list if len(w) <= max_char_len]
-
-    random_word = random.choice(safe_word_list) + "\0"
+    random_word = random.choice(holdout_safe_word_list) + "\0"
     check_audit_viability(random_word, codec, stego_map)
 
     for i, (cover_tensor, secret_tensor) in pbar:
         # Prepare single sample
-        secret_text = random.choice(safe_word_list) + "\0"
+        secret_text = random.choice(holdout_safe_word_list) + "\0"
         sc = to_scale(to_display(cover_tensor))[tf.newaxis, ...]
         original_secret_img = to_display(secret_tensor)
 
@@ -2449,16 +2609,22 @@ def plot_ablation_comparison(df_train, df_holdout, df_rank, ablation_configs, sa
     fig.show()
 
 
-df_abl_train, df_abl_holdout, df_abl_rank = compare_ablations(
-    ABLATION_CONFIGS, data_dir)
+ANALYSIS_STEGO_MAP_ABLATION_IDX = ACTIVE_STEGO_MAP_ABLATIONS[0]
+ANALYSIS_STEGO_TAG = STEGO_MAP_ABLATIONS[ANALYSIS_STEGO_MAP_ABLATION_IDX]["tag"]
+analysis_data_dir = os.path.join(data_dir, ANALYSIS_STEGO_TAG)
+analysis_models_dir = os.path.join(models_dir, ANALYSIS_STEGO_TAG)
 
-df_abl_rank.to_csv(os.path.join(data_dir, "ablation_comparison_rank.csv"))
+df_abl_train, df_abl_holdout, df_abl_rank = compare_ablations(
+    ABLATION_CONFIGS, analysis_data_dir)
+
+df_abl_rank.to_csv(os.path.join(analysis_data_dir,
+                   "ablation_comparison_rank.csv"))
 
 if df_abl_rank is not None:
     plot_ablation_comparison(
         df_abl_train, df_abl_holdout, df_abl_rank,
         ABLATION_CONFIGS,
-        save_path=os.path.join(data_dir, "ablation_comparison.pdf"),
+        save_path=os.path.join(analysis_data_dir, "ablation_comparison.pdf"),
     )
 
 
@@ -2469,25 +2635,11 @@ if df_abl_rank is not None:
 #
 
 # %%
-df_abl_rank.to_csv(os.path.join(data_dir, "ablation_comparison_rank.csv"))
+df_abl_rank.to_csv(os.path.join(analysis_data_dir,
+                   "ablation_comparison_rank.csv"))
 
 
 # %%
-
-# =============================================================================
-# DCT & DWT Parameter Sweep — repetition (rep) configs
-#
-# rep=1  → original behaviour (no redundancy)
-# rep=2  → each payload bit embedded in 2 consecutive slots, majority voted
-# rep=3  → each payload bit embedded in 3 consecutive slots, majority voted
-#
-# delta / band / block_size are kept at the previous best values so that
-# the only variable changing is the redundancy factor.
-#
-# Capacity constraint: rep reduces effective capacity by factor rep,
-# so rep=3 with block_size=4 on a 64×64 image gives 768/3 = 256 effective bits.
-# fixed_byte_len * 8 must be <= that; the embed will raise if not.
-# =============================================================================
 
 
 def evaluate_grid_with_holdout(method_name, param_grid, codec, n_samples=None, dataset=None,
@@ -2597,27 +2749,6 @@ def evaluate_grid_with_holdout(method_name, param_grid, codec, n_samples=None, d
 
     return pd.DataFrame(results)
 
-
-# %%
-
-# =============================================================================
-# Stego Parameter Sweep — per-ablation
-#
-# Iterates over every trained ablation, loads its weights, then runs a full
-# DCT / DWT / Spread-Spectrum / Statistical parameter sweep against those
-# specific network weights. This lets us separate the effect of the stego
-# params from the effect of the network training config.
-#
-# Config rationale (informed by round-1 sweep results):
-#   DCT : delta<128 all failed in round 1; delta=200–400 confirmed working.
-#          rep=3 adds majority-vote redundancy at the cost of 3× capacity.
-#   DWT : LL band survived neural smoothing better than LH in round 1;
-#          delta=200–400 needed. LH retained at delta=300 as comparison point.
-#   SS  : Robustness-trained models (idx 2,4,5,6 — early noise) apply stronger
-#          per-step smoothing; gain=200–600 range extended to compensate.
-#   Stat: threshold=80–200 was productive in round 1; threshold=300 added for
-#          robustness-trained models where moderate thresholds may not survive.
-# =============================================================================
 
 # --- Stego param grids (shared across all ablations) ---
 _dct_configs = [
@@ -2857,7 +2988,83 @@ def run_stego_param_sweep_per_ablation(ablation_configs, data_dir, models_dir,
     return df_combined, df_best
 
 
-df_sweep_combined, df_sweep_best = run_stego_param_sweep_per_ablation(
-    ABLATION_CONFIGS, data_dir, models_dir,
-    codec, holdout_dataset, safe_word_list, n_samples=30, verbose=False,
+# df_sweep_combined, df_sweep_best = run_stego_param_sweep_per_ablation(
+#     ABLATION_CONFIGS, analysis_data_dir, analysis_models_dir,
+#     codec, holdout_dataset, safe_word_list, n_samples=30, verbose=False,
+# )
+
+def scan_existing_run_csvs(base_data_dir, stego_map_ablation_idxs=None, model_ablation_idxs=None):
+    """
+    Read existing training/holdout CSV artifacts without running any model code.
+    Returns:
+      df_train: one row per (stego_tag, ablation_idx) from training_history.csv (last epoch)
+      df_holdout: one row per (stego_tag, ablation_idx, method) from evaluation_metrics.csv means
+    """
+    stego_map_ablation_idxs = ACTIVE_STEGO_MAP_ABLATIONS if stego_map_ablation_idxs is None else stego_map_ablation_idxs
+    model_ablation_idxs = ACTIVE_MODEL_ABLATIONS if model_ablation_idxs is None else model_ablation_idxs
+
+    train_rows = []
+    holdout_rows = []
+
+    for sm_idx in stego_map_ablation_idxs:
+        if sm_idx < 0 or sm_idx >= len(STEGO_MAP_ABLATIONS):
+            continue
+        stego_tag = STEGO_MAP_ABLATIONS[sm_idx]["tag"]
+
+        for ablation_idx in model_ablation_idxs:
+            run_dir = os.path.join(base_data_dir, stego_tag, str(ablation_idx))
+
+            train_path = os.path.join(run_dir, 'training_history.csv')
+            if os.path.exists(train_path):
+                th = pd.read_csv(train_path)
+                if not th.empty:
+                    last = th.iloc[-1]
+                    train_rows.append({
+                        'stego_map_ablation_idx': sm_idx,
+                        'stego_tag': stego_tag,
+                        'ablation_idx': ablation_idx,
+                        'epoch': int(last.get('epoch', len(th) - 1)),
+                        'val_loss': float(last.get('val_loss', float('nan'))),
+                        'val_cover_psnr': float(last.get('val_cover_psnr', float('nan'))),
+                        'val_secret_ssim': float(last.get('val_secret_ssim', float('nan'))),
+                        'noise_prob': float(last.get('noise_prob', float('nan'))),
+                        'payload_len': float(last.get('payload_len', float('nan'))),
+                    })
+
+            eval_path = os.path.join(run_dir, 'evaluation_metrics.csv')
+            if os.path.exists(eval_path):
+                em = pd.read_csv(eval_path)
+                if not em.empty:
+                    grp = em.groupby('method', as_index=False)[
+                        ['total_loss', 'psnr_c', 'ssim_c', 'psnr_s',
+                            'ssim_s', 'ber_img', 'ber_text', 'text_acc']
+                    ].mean()
+                    grp['stego_map_ablation_idx'] = sm_idx
+                    grp['stego_tag'] = stego_tag
+                    grp['ablation_idx'] = ablation_idx
+                    holdout_rows.append(grp)
+
+    df_train = pd.DataFrame(train_rows)
+    df_holdout = pd.concat(
+        holdout_rows, ignore_index=True) if holdout_rows else pd.DataFrame()
+    return df_train, df_holdout
+
+
+df_csv_train, df_csv_holdout = scan_existing_run_csvs(
+    data_dir,
+    stego_map_ablation_idxs=ACTIVE_STEGO_MAP_ABLATIONS,
+    model_ablation_idxs=ACTIVE_MODEL_ABLATIONS,
 )
+
+print("CSV scan complete (no model runs executed).")
+if not df_csv_train.empty:
+    print("\nTraining summary from existing CSVs:")
+    display(df_csv_train.round(4))
+else:
+    print("No training_history.csv files found for selected run plan.")
+
+if not df_csv_holdout.empty:
+    print("\nHoldout summary (per method) from existing CSVs:")
+    display(df_csv_holdout.round(4))
+else:
+    print("No evaluation_metrics.csv files found for selected run plan.")
