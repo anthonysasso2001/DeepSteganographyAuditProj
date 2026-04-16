@@ -1327,7 +1327,7 @@ codec = HuffmanCodec.from_frequencies(freq_map)
 # A/B (or N-way) stego-map ablations. Add new entries here to expand beyond A/B.
 STEGO_MAP_ABLATIONS = [
     {
-        "tag": "commented_baseline",
+        "tag": "baseline",
         "dct_delta": 200.0,
         "dct_block_size": 4,
         "dct_rep": 3,
@@ -1338,24 +1338,13 @@ STEGO_MAP_ABLATIONS = [
         "stat_block_size": 4,
         "stat_threshold": 60.0,
     },
-    {
-        "tag": "current_uncommented",
-        "dct_delta": 300.0,
-        "dct_block_size": 4,
-        "dct_rep": 1,
-        "dwt_delta": 250.0,
-        "dwt_band": "LH",
-        "dwt_rep": 1,
-        "ss_gain": 110.0,
-        "stat_block_size": 4,
-        "stat_threshold": 60.0,
-    },
 ]
 
 # A/B default: run both stego-map ablations against model ablation 0.
 # Add more model indices here when you want broader sweeps.
-ACTIVE_STEGO_MAP_ABLATIONS = [0, 1]
-ACTIVE_MODEL_ABLATIONS = [0]
+ACTIVE_STEGO_MAP_ABLATIONS = [0]
+# change to [0,1] etc to run specific ablations
+ACTIVE_MODEL_ABLATIONS = list(range(len(ABLATION_CONFIGS)))
 
 
 def build_stego_map_from_ablation(cfg):
@@ -2752,107 +2741,40 @@ def evaluate_grid_with_holdout(method_name, param_grid, codec, n_samples=None, d
 
 # --- Stego param grids (shared across all ablations) ---
 _dct_configs = [
-    # Config 1 — dct_d150_b4: lower-bound probe for #4-variants (idx 9/10)
-    # β↓ and α↑ in idx 9/10 should relax smoothing slightly. If d150 works here
-    # it means reduced β lets the network pass finer block perturbations, giving
-    # better pre-network PSNR than d200 at the same text_acc.
     {'delta': 150.0, 'block_size': 4, 'rep': 1, 'label': 'dct_d150_b4_rep1'},
-
-    # Config 2 — dct_d200_b4: carry-forward known winner for #4 (0.6 text_acc)
-    # Retested here as a direct benchmark for the new #4-variants vs the original.
     {'delta': 200.0, 'block_size': 4, 'rep': 1, 'label': 'dct_d200_b4_rep1'},
-
-    # Config 3 — dct_d200_b8: same delta as the #4 winner but larger block
-    # block_size=8 modifies 4× fewer spatial blocks than block_size=4, so the
-    # cover PSNR overhead per-image is significantly lower. The tradeoff is that
-    # each block carries proportionally more signal; if the network averages within
-    # blocks and the block is larger, individual QIM quantisation steps survive
-    # better because there are fewer discontinuities at block boundaries.
     {'delta': 200.0, 'block_size': 8, 'rep': 1, 'label': 'dct_d200_b8_rep1'},
-
-    # Config 4 — dct_d300_b4: bridge delta for #3-variants (idx 7/8)
-    # #3 failed at d200 but earlier noise (idx 7) should reduce smoothing.
-    # d300 is the first step above the #4 range — if idx 7/8 still smooth d200,
-    # d300 has a wider quantisation margin to survive.
     {'delta': 300.0, 'block_size': 4, 'rep': 1, 'label': 'dct_d300_b4_rep1'},
-
-    # Config 5 — dct_d300_b8: high delta + large block for #3-variants
-    # Combining d300 amplitude with the reduced spatial footprint of block_size=8
-    # targets both goals simultaneously for #3-variant networks: the large margin
-    # survives heavier smoothing (cover PSNR already high → can afford larger δ),
-    # and the reduced block count means the cover image has fewer modified regions.
     {'delta': 300.0, 'block_size': 8, 'rep': 1, 'label': 'dct_d300_b8_rep1'},
-
-    # Config 6 — dct_d500_b4: extreme delta for #3-baseline and its variants
-    # #3's original sweep had d200–d400 all fail completely; the step to d500
-    # moves well outside the network's linear adjustment range. At this amplitude
-    # the QIM shift after IDCT reconstruction is detectable even after the neural
-    # smoothing pass. If d500 still fails for #3, it confirms the network is doing
-    # structural suppression, not just amplitude damping.
     {'delta': 500.0, 'block_size': 4, 'rep': 1, 'label': 'dct_d500_b4_rep1'},
 ]
 
 _dwt_configs = [
-    # Config 1 — dwt_LH_d250: fine-tune below #4's LH d300 baseline (0.4 text_acc)
-    # For idx 9/10 where β is reduced, the network's smoothing is slightly relaxed.
-    # d250 probes whether that marginal relaxation allows a lower-distortion delta
-    # to pass, improving cover PSNR from the stego image's perspective.
     {'delta': 250.0, 'band': 'LH', 'rep': 1, 'label': 'dwt_LH_d250_rep1'},
-
-    # Config 2 — dwt_LH_d300: carry-forward #4 baseline (0.4 text_acc)
-    # Direct comparison point for all new ablations.
     {'delta': 300.0, 'band': 'LH', 'rep': 1, 'label': 'dwt_LH_d300_rep1'},
-
-    # Config 3 — dwt_LH_d400: extend upward from #4 baseline
-    # If idx 7/8's earlier noise preserved frequency sensitivity, d400 on LH
-    # should be the next viable step up. For #4-variants, d400 may also work
-    # if the slightly reduced β makes the network slightly less aggressive.
     {'delta': 400.0, 'band': 'LH', 'rep': 1, 'label': 'dwt_LH_d400_rep1'},
-
-    # Config 4 — dwt_HL_d300: untested vertical-edge band
-    # The current DWT uses Haar decomposition on (H, W). LH captures horizontal
-    # frequency variations (vertical edges in the image); HL captures vertical
-    # frequency variations (horizontal edges). The residual convolutional kernels
-    # in the reveal network are isotropic (3×3, 4×4, 5×5), but the hide network's
-    # smoothing effect may be directionally asymmetric in practice — HL may survive
-    # better or worse than LH depending on dataset texture distribution (TinyImageNet
-    # has mixed natural + synthetic scenes). This is a low-cost hypothesis test.
     {'delta': 300.0, 'band': 'HL', 'rep': 1, 'label': 'dwt_HL_d300_rep1'},
-
-    # Config 5 — dwt_LH_d500: high delta for #3 variants (idx 7/8)
-    # #3's original sweep failed across all tested DWT configs (max d400).
-    # idx 7/8 start noise 15 epochs earlier, so the network should suppress
-    # frequency signals slightly less aggressively. d500 provides a large enough
-    # QIM margin to survive the residual smoothing that earlier-noise training
-    # does not fully eliminate.
     {'delta': 500.0, 'band': 'LH', 'rep': 1, 'label': 'dwt_LH_d500_rep1'},
 ]
 
+
 _ss_configs = [
-    # Sub-floor probes — densely cover the gap below the confirmed minimum (g150).
-    # g50 is an extreme lower bound; if it passes, the method is extremely robust.
-    # g70/g90 are the primary interest range: large enough to survive neural
-    # smoothing but small enough to meaningfully reduce cover distortion vs g150.
-    # g110/g130 are safety fallbacks in case the floor is closer to 150 than expected.
-    {'gain': 50.0,  'label': 'ss_g50'},
-    {'gain': 70.0,  'label': 'ss_g70'},
-    {'gain': 90.0,  'label': 'ss_g90'},
+    {'gain': 92.0, 'label': 'ss_g92'},
+    {'gain': 96.0, 'label': 'ss_g96'},
+    {'gain': 100.0, 'label': 'ss_g100'},
+    {'gain': 104.0, 'label': 'ss_g104'},
+    {'gain': 108.0, 'label': 'ss_g108'},
     {'gain': 110.0, 'label': 'ss_g110'},
-    {'gain': 130.0, 'label': 'ss_g130'},
+    {'gain': 112.0, 'label': 'ss_g112'},
 ]
 
-_stat_configs = [
-    # Sub-floor probes — densely cover the gap below the confirmed minimum (t80).
-    # t20 is an aggressive lower bound to characterise the failure mode.
-    # t35/t50 are the primary interest range.
-    # t60/t70 are safety fallbacks bridging to the confirmed-working t80.
-    # All use block_size=4 — block_size=8 always fails due to capacity overflow
-    # (64 bits available vs 256 bits required), not network robustness.
-    {'block_size': 4, 'threshold': 20.0, 'label': 'stat_b4_t20'},
-    {'block_size': 4, 'threshold': 35.0, 'label': 'stat_b4_t35'},
-    {'block_size': 4, 'threshold': 50.0, 'label': 'stat_b4_t50'},
+stat_configs = [
+    {'block_size': 4, 'threshold': 52.0, 'label': 'stat_b4_t52'},
+    {'block_size': 4, 'threshold': 54.0, 'label': 'stat_b4_t54'},
+    {'block_size': 4, 'threshold': 56.0, 'label': 'stat_b4_t56'},
+    {'block_size': 4, 'threshold': 58.0, 'label': 'stat_b4_t58'},
     {'block_size': 4, 'threshold': 60.0, 'label': 'stat_b4_t60'},
-    {'block_size': 4, 'threshold': 70.0, 'label': 'stat_b4_t70'},
+    {'block_size': 4, 'threshold': 62.0, 'label': 'stat_b4_t62'},
 ]
 
 
