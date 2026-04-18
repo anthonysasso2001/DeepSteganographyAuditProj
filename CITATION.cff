@@ -1,0 +1,20 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: DeepSteganographyAuditProj
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Anthony
+    family-names: Sasso
+    email: anthonysasso2001@gmail.com
+repository-code: >-
+  https://github.com/anthonysasso2001/DeepSteganographyAuditProj
+abstract: >-
+  Hybrid Deep Steganography Project for embedding text into
+  images using various text steganography methods and
+  passing that into a second NN steganography layer and
+  auditing the results.
