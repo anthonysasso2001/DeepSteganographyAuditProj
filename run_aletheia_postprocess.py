@@ -475,44 +475,102 @@ def plot_aletheia_pair_comparison(df_compare, save_path=None):
         print("No successful Aletheia pair comparisons to plot.")
         return
 
-    labels = [f"{m}:{p}" for m, p in zip(
-        df_compare["method"], df_compare["pair_name"])]
+    pair_names = sorted(df_compare["pair_name"].dropna().unique().tolist())
+    pair_a = pair_names[0] if pair_names else None
+    pair_b = pair_names[1] if len(pair_names) > 1 else None
+
     fig = make_subplots(
-        rows=1,
+        rows=2,
         cols=2,
         subplot_titles=(
-            "Aletheia Score Gap (role_b - role_a)",
-            "Flagged Ratio Gap (role_b - role_a)",
+            f"{pair_a} | Score Gap" if pair_a else "Pair: N/A | Score Gap",
+            f"{pair_a} | Flagged Gap" if pair_a else "Pair: N/A | Flagged Gap",
+            f"{pair_b} | Score Gap" if pair_b else "Pair: N/A | Score Gap",
+            f"{pair_b} | Flagged Gap" if pair_b else "Pair: N/A | Flagged Gap",
         ),
+        horizontal_spacing=0.12,
+        vertical_spacing=0.22,
     )
 
-    fig.add_trace(
-        go.Bar(x=labels, y=df_compare["score_gap"],
-               name="Score Gap", marker_color="#1f77b4"),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Bar(x=labels, y=df_compare["flagged_gap"],
-               name="Flagged Gap", marker_color="#d62728"),
-        row=1,
-        col=2,
-    )
+    if pair_a:
+        sub_a = df_compare[df_compare["pair_name"] == pair_a]
+        labels_a = sub_a["method"].astype(str).tolist()
+        fig.add_trace(
+            go.Bar(x=labels_a, y=sub_a["score_gap"],
+                   name=pair_a, marker_color="#1f77b4", showlegend=False),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Bar(x=labels_a, y=sub_a["flagged_gap"],
+                   name=pair_a, marker_color="#ff7f0e", showlegend=False),
+            row=1,
+            col=2,
+        )
+        fig.update_yaxes(title_text="Score Gap", row=1, col=1)
+        fig.update_yaxes(title_text="Flagged Gap", row=1, col=2)
+    else:
+        fig.add_trace(
+            go.Bar(x=["N/A"], y=[0.0],
+                   marker_color="#cccccc", showlegend=False),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Bar(x=["N/A"], y=[0.0],
+                   marker_color="#cccccc", showlegend=False),
+            row=1,
+            col=2,
+        )
+        fig.update_yaxes(title_text="Score Gap", row=1, col=1)
+        fig.update_yaxes(title_text="Flagged Gap", row=1, col=2)
 
-    fig.update_yaxes(title_text="Score Difference", row=1, col=1)
-    fig.update_yaxes(title_text="Flagged Ratio Difference", row=1, col=2)
-    fig.update_xaxes(tickangle=-30)
+    if pair_b:
+        sub_b = df_compare[df_compare["pair_name"] == pair_b]
+        labels_b = sub_b["method"].astype(str).tolist()
+        fig.add_trace(
+            go.Bar(x=labels_b, y=sub_b["score_gap"],
+                   name=pair_b, marker_color="#2ca02c", showlegend=False),
+            row=2,
+            col=1,
+        )
+        fig.add_trace(
+            go.Bar(x=labels_b, y=sub_b["flagged_gap"],
+                   name=pair_b, marker_color="#d62728", showlegend=False),
+            row=2,
+            col=2,
+        )
+        fig.update_yaxes(title_text="Score Gap", row=2, col=1)
+        fig.update_yaxes(title_text="Flagged Gap", row=2, col=2)
+    else:
+        fig.add_trace(
+            go.Bar(x=["N/A"], y=[0.0],
+                   marker_color="#cccccc", showlegend=False),
+            row=2,
+            col=1,
+        )
+        fig.add_trace(
+            go.Bar(x=["N/A"], y=[0.0],
+                   marker_color="#cccccc", showlegend=False),
+            row=2,
+            col=2,
+        )
+        fig.update_yaxes(title_text="Score Gap", row=2, col=1)
+        fig.update_yaxes(title_text="Flagged Gap", row=2, col=2)
+
+    fig.update_xaxes(tickangle=-45, automargin=True)
     fig.update_layout(
-        width=1400,
-        height=500,
+        width=max(1400, 500 + 150 *
+                  max(1, int(df_compare["method"].nunique()))),
+        height=1000,
         template="plotly_white",
         title="Aletheia Pairwise Comparison by Method",
         showlegend=False,
+        margin={"l": 100, "r": 70, "t": 100, "b": 200},
     )
 
     if save_path:
         fig.write_image(save_path, format="pdf")
-    fig.show()
 
 
 def _parse_index_range(index_range):
@@ -599,6 +657,120 @@ def _apply_research_full_defaults(args):
     return args
 
 
+def _load_aletheia_csvs(run_data_dir):
+    """Load existing Aletheia CSV outputs from a run directory."""
+    out_dir = os.path.join(run_data_dir, "aletheia_outputs")
+
+    df_runs = pd.DataFrame()
+    df_image_level = pd.DataFrame()
+    df_compare = pd.DataFrame()
+    df_tool_audits = pd.DataFrame()
+
+    runs_csv = os.path.join(out_dir, "aletheia_raw_runs.csv")
+    if os.path.exists(runs_csv):
+        df_runs = pd.read_csv(runs_csv)
+
+    image_csv = os.path.join(out_dir, "aletheia_pair_image_level.csv")
+    if os.path.exists(image_csv):
+        df_image_level = pd.read_csv(image_csv)
+
+    compare_csv = os.path.join(out_dir, "aletheia_pair_comparison.csv")
+    if os.path.exists(compare_csv):
+        df_compare = pd.read_csv(compare_csv)
+
+    tool_csv = os.path.join(out_dir, "aletheia_tool_audits.csv")
+    if os.path.exists(tool_csv):
+        df_tool_audits = pd.read_csv(tool_csv)
+
+    return df_runs, df_image_level, df_compare, df_tool_audits, out_dir
+
+
+def _process_run(run_dir, args, plot_only=False):
+    """Process a single run: either run Aletheia or load existing CSVs."""
+    print(f"\n=== Processing run: {run_dir} ===")
+
+    if plot_only:
+        print("(plot-only mode: loading existing Aletheia outputs)")
+        df_runs, df_image_level, df_compare, df_tool_audits, out_dir = _load_aletheia_csvs(
+            run_dir)
+        if df_compare.empty:
+            print(
+                f"Warning: No aletheia_pair_comparison.csv found in {out_dir}")
+            return None
+    else:
+        df_runs, df_image_level, df_compare, df_tool_audits, out_dir = run_aletheia_on_results_raw(
+            run_data_dir=run_dir,
+            repo_root=args.repo_root,
+            python_executable=args.python_executable,
+            timeout_sec=args.timeout_sec,
+            aletheia_dev=args.aletheia_dev,
+            require_gpu=args.require_gpu,
+            run_tool_audits=args.run_tool_audits,
+            tool_audit_limit=args.tool_audit_limit,
+            include_dct_tool=args.tool_audit_include_dct,
+        )
+
+        print(
+            f"Saved raw run CSV: {os.path.join(out_dir, 'aletheia_raw_runs.csv')}")
+        print(
+            f"Saved image-level matched CSV: {os.path.join(out_dir, 'aletheia_pair_image_level.csv')}")
+        print(
+            f"Saved pair comparison CSV: {os.path.join(out_dir, 'aletheia_pair_comparison.csv')}")
+        if not df_tool_audits.empty:
+            print(
+                f"Saved tool audit CSV: {os.path.join(out_dir, 'aletheia_tool_audits.csv')}")
+
+        if not df_image_level.empty:
+            print(
+                "Matched image-level comparison complete "
+                f"({len(df_image_level)} correlated rows)."
+            )
+
+    if not plot_only:
+        failures = df_runs[df_runs["return_code"] != 0]
+        if args.require_gpu:
+            gpu_failures = df_runs[df_runs["used_cpu"] == True]
+            if not gpu_failures.empty:
+                print("\nGPU enforcement warnings (showing first 10 CPU fallbacks):")
+                print(gpu_failures[["method", "pair_name", "role", "requested_dev", "used_cpu", "error_summary"]]
+                      .head(10)
+                      .to_string(index=False))
+
+        if not failures.empty:
+            print("\nAletheia failures detected (showing first 10):")
+            print(failures[["method", "pair_name", "role", "return_code",
+                  "error_summary"]].head(10).to_string(index=False))
+
+    if not args.no_plot:
+        plot_path = os.path.join(out_dir, "aletheia_pair_comparison.pdf")
+        plot_aletheia_pair_comparison(df_compare, save_path=plot_path)
+        if not df_compare.empty:
+            print(f"Saved comparison plot: {plot_path}")
+
+    run_label = os.path.normpath(run_dir)
+    summary_row = {
+        "run_data_dir": run_label,
+        "n_role_runs": int(len(df_runs)),
+        "n_pair_rows": int(len(df_compare)),
+        "n_image_rows": int(len(df_image_level)),
+        "n_tool_rows": int(len(df_tool_audits)),
+    }
+
+    if not plot_only:
+        failures = df_runs[df_runs["return_code"] != 0]
+        summary_row["n_failures"] = int(len(failures))
+        summary_row["n_cpu_fallbacks"] = int(
+            len(df_runs[df_runs["used_cpu"] == True])) if "used_cpu" in df_runs else 0
+
+    return {
+        "summary": summary_row,
+        "df_runs": df_runs,
+        "df_image_level": df_image_level,
+        "df_compare": df_compare,
+        "df_tool_audits": df_tool_audits,
+    }
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         description="Run Aletheia postprocess on notebook results_raw outputs.")
@@ -663,6 +835,11 @@ def build_arg_parser():
         help="Skip PDF/interactive plot generation",
     )
     parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Load existing Aletheia CSVs and regenerate plots (skip Aletheia execution)",
+    )
+    parser.add_argument(
         "--run-tool-audits",
         action="store_true",
         help="Run per-image Aletheia tool audits (print-diffs; optional print-dct-diffs) on matched pairs.",
@@ -706,83 +883,27 @@ def main():
     summary_rows = []
 
     for run_dir in run_dirs:
-        print(f"\n=== Processing run: {run_dir} ===")
-        df_runs, df_image_level, df_compare, df_tool_audits, out_dir = run_aletheia_on_results_raw(
-            run_data_dir=run_dir,
-            repo_root=args.repo_root,
-            python_executable=args.python_executable,
-            timeout_sec=args.timeout_sec,
-            aletheia_dev=args.aletheia_dev,
-            require_gpu=args.require_gpu,
-            run_tool_audits=args.run_tool_audits,
-            tool_audit_limit=args.tool_audit_limit,
-            include_dct_tool=args.tool_audit_include_dct,
-        )
+        result = _process_run(run_dir, args, plot_only=args.plot_only)
+        if result is None:
+            continue
 
-        print(
-            f"Saved raw run CSV: {os.path.join(out_dir, 'aletheia_raw_runs.csv')}")
-        print(
-            f"Saved image-level matched CSV: {os.path.join(out_dir, 'aletheia_pair_image_level.csv')}")
-        print(
-            f"Saved pair comparison CSV: {os.path.join(out_dir, 'aletheia_pair_comparison.csv')}")
-        if not df_tool_audits.empty:
-            print(
-                f"Saved tool audit CSV: {os.path.join(out_dir, 'aletheia_tool_audits.csv')}")
+        summary_rows.append(result["summary"])
 
-        if not df_image_level.empty:
-            print(
-                "Matched image-level comparison complete "
-                f"({len(df_image_level)} correlated rows)."
-            )
-
-        failures = df_runs[df_runs["return_code"] != 0]
-        if args.require_gpu:
-            gpu_failures = df_runs[df_runs["used_cpu"] == True]
-            if not gpu_failures.empty:
-                print("\nGPU enforcement warnings (showing first 10 CPU fallbacks):")
-                print(gpu_failures[["method", "pair_name", "role", "requested_dev", "used_cpu", "error_summary"]]
-                      .head(10)
-                      .to_string(index=False))
-
-        if not failures.empty:
-            print("\nAletheia failures detected (showing first 10):")
-            print(failures[["method", "pair_name", "role", "return_code",
-                  "error_summary"]].head(10).to_string(index=False))
-
-        if not args.no_plot:
-            plot_path = os.path.join(out_dir, "aletheia_pair_comparison.pdf")
-            plot_aletheia_pair_comparison(df_compare, save_path=plot_path)
-            if not df_compare.empty:
-                print(f"Saved comparison plot: {plot_path}")
-
-        run_label = os.path.normpath(run_dir)
-        summary_rows.append(
-            {
-                "run_data_dir": run_label,
-                "n_role_runs": int(len(df_runs)),
-                "n_pair_rows": int(len(df_compare)),
-                "n_image_rows": int(len(df_image_level)),
-                "n_tool_rows": int(len(df_tool_audits)),
-                "n_failures": int(len(failures)),
-                "n_cpu_fallbacks": int(len(df_runs[df_runs["used_cpu"] == True])) if "used_cpu" in df_runs else 0,
-            }
-        )
-
-        if not df_runs.empty:
-            tmp = df_runs.copy()
-            tmp.insert(0, "run_data_dir", run_label)
+        if not result["df_runs"].empty:
+            tmp = result["df_runs"].copy()
+            tmp.insert(0, "run_data_dir", os.path.normpath(run_dir))
             all_runs.append(tmp)
-        if not df_image_level.empty:
-            tmp = df_image_level.copy()
-            tmp.insert(0, "run_data_dir", run_label)
+        if not result["df_image_level"].empty:
+            tmp = result["df_image_level"].copy()
+            tmp.insert(0, "run_data_dir", os.path.normpath(run_dir))
             all_image.append(tmp)
-        if not df_compare.empty:
-            tmp = df_compare.copy()
-            tmp.insert(0, "run_data_dir", run_label)
+        if not result["df_compare"].empty:
+            tmp = result["df_compare"].copy()
+            tmp.insert(0, "run_data_dir", os.path.normpath(run_dir))
             all_compare.append(tmp)
-        if not df_tool_audits.empty:
-            tmp = df_tool_audits.copy()
-            tmp.insert(0, "run_data_dir", run_label)
+        if not result["df_tool_audits"].empty:
+            tmp = result["df_tool_audits"].copy()
+            tmp.insert(0, "run_data_dir", os.path.normpath(run_dir))
             all_tools.append(tmp)
 
     if len(run_dirs) > 1:

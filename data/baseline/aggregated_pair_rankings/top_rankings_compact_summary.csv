@@ -1,0 +1,13 @@
+pair_name,entity_type,method,rank_composite,mean_score_gap,mean_flagged_gap,n_total_matched_images,ranking_objective,ablation_key
+cover_vs_stego,method,spread_spectrum,1.0,0.09047619047619045,0.11904761904761901,105.0,stealth_minimize_gap,
+cover_vs_stego,method,dct,2.0,0.29952380952380947,0.3476190476190476,105.0,stealth_minimize_gap,
+cover_vs_stego,method,lsb,3.0,0.31523809523809526,0.36904761904761907,105.0,stealth_minimize_gap,
+pre_secret_vs_secret,method,lsb,1.0,0.0,0.0,105.0,stealth_minimize_gap,
+pre_secret_vs_secret,method,original,1.0,0.0,0.0,105.0,stealth_minimize_gap,
+pre_secret_vs_secret,method,statistical,2.0,0.07142857142857138,0.09999999999999996,105.0,stealth_minimize_gap,
+cover_vs_stego,ablation,,1.0,0.2227777777777778,0.26666666666666666,90.0,stealth_minimize_gap,baseline/2
+cover_vs_stego,ablation,,2.0,0.24638888888888885,0.3138888888888889,90.0,stealth_minimize_gap,baseline/1
+cover_vs_stego,ablation,,3.0,0.2811111111111111,0.33055555555555555,90.0,stealth_minimize_gap,baseline/6
+pre_secret_vs_secret,ablation,,1.0,1.2255555555555557,0.06944444444444445,90.0,stealth_minimize_gap,baseline/6
+pre_secret_vs_secret,ablation,,2.0,1.1858333333333333,0.08055555555555553,90.0,stealth_minimize_gap,baseline/2
+pre_secret_vs_secret,ablation,,3.0,1.2372222222222222,0.07777777777777775,90.0,stealth_minimize_gap,baseline/3

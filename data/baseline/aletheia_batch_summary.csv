@@ -1,8 +1,8 @@
-run_data_dir,n_role_runs,n_pair_rows,n_image_rows,n_tool_rows,n_failures,n_cpu_fallbacks
-data/baseline/0,24,12,180,180,0,0
-data/baseline/1,24,12,180,180,0,0
-data/baseline/2,24,12,180,180,0,0
-data/baseline/3,24,12,180,180,0,0
-data/baseline/4,24,12,180,180,0,0
-data/baseline/5,24,12,180,180,0,0
-data/baseline/6,24,12,180,180,0,0
+run_data_dir,n_role_runs,n_pair_rows,n_image_rows,n_tool_rows
+data\baseline\0,24,12,180,180
+data\baseline\1,24,12,180,180
+data\baseline\2,24,12,180,180
+data\baseline\3,24,12,180,180
+data\baseline\4,24,12,180,180
+data\baseline\5,24,12,180,180
+data\baseline\6,24,12,180,180

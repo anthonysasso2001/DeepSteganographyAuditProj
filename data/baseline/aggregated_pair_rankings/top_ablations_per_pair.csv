@@ -1,0 +1,7 @@
+pair_name,entity_type,ablation_key,rank_composite,mean_score_gap,mean_flagged_gap,n_total_matched_images,ranking_objective
+cover_vs_stego,ablation,baseline/2,1.0,0.2227777777777778,0.26666666666666666,90.0,stealth_minimize_gap
+cover_vs_stego,ablation,baseline/1,2.0,0.24638888888888885,0.3138888888888889,90.0,stealth_minimize_gap
+cover_vs_stego,ablation,baseline/6,3.0,0.2811111111111111,0.33055555555555555,90.0,stealth_minimize_gap
+pre_secret_vs_secret,ablation,baseline/6,1.0,1.2255555555555557,0.06944444444444445,90.0,stealth_minimize_gap
+pre_secret_vs_secret,ablation,baseline/2,2.0,1.1858333333333333,0.08055555555555553,90.0,stealth_minimize_gap
+pre_secret_vs_secret,ablation,baseline/3,3.0,1.2372222222222222,0.07777777777777775,90.0,stealth_minimize_gap

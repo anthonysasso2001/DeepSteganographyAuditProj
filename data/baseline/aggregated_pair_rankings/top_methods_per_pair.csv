@@ -1,0 +1,7 @@
+pair_name,entity_type,method,rank_composite,mean_score_gap,mean_flagged_gap,n_total_matched_images,ranking_objective
+cover_vs_stego,method,spread_spectrum,1.0,0.09047619047619045,0.11904761904761901,105.0,stealth_minimize_gap
+cover_vs_stego,method,dct,2.0,0.29952380952380947,0.3476190476190476,105.0,stealth_minimize_gap
+cover_vs_stego,method,lsb,3.0,0.31523809523809526,0.36904761904761907,105.0,stealth_minimize_gap
+pre_secret_vs_secret,method,lsb,1.0,0.0,0.0,105.0,stealth_minimize_gap
+pre_secret_vs_secret,method,original,1.0,0.0,0.0,105.0,stealth_minimize_gap
+pre_secret_vs_secret,method,statistical,2.0,0.07142857142857138,0.09999999999999996,105.0,stealth_minimize_gap
