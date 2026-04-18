@@ -5,6 +5,7 @@
 # %%
 from IPython.display import display
 from tqdm.auto import tqdm
+from PIL import Image as PILImage
 from IPython.display import clear_output
 import shutil
 from plotly.subplots import make_subplots
@@ -25,7 +26,6 @@ from datasets import load_dataset
 import numpy as np
 import os
 import tensorflow as tf
-from PIL import Image as PILImage
 import gc
 
 # NOTE: may have to change batch size and epochs depending on GPU VRAM. but epochs should be kept to 100 if possible for train accuracy.
@@ -1835,6 +1835,8 @@ for stego_map_ablation_idx, ablation_idx in RUN_PLAN:
 #
 
 # %%
+
+
 def calculate_text_ber(original_text, revealed_text):
     """
     Calculates the Bit Error Rate between two strings.
@@ -1966,14 +1968,9 @@ def to_display(img_tensor):
     return np.clip(np.round(arr * 255), 0, 255).astype(np.uint8)
 
 
-def save_raw_images(cover, secret, stego, reveal, method_name, index, save_dir, pre_secret=None):
+def save_raw_images(pre_secret, cover, secret, stego, reveal, method_name, index, save_dir):
     """Saves raw PNG images for each role into results_raw/{method}/{role}/ subfolders."""
-    roles = [('cover', cover), ('secret', secret),
-             ('stego', stego), ('reveal', reveal)]
-    if pre_secret is not None:
-        roles.insert(0, ('pre_secret', pre_secret))
-
-    for role, arr in roles:
+    for role, arr in [('pre_secret', pre_secret), ('cover', cover), ('secret', secret), ('stego', stego), ('reveal', reveal)]:
         folder = os.path.join(save_dir, 'results_raw', method_name, role)
         os.makedirs(folder, exist_ok=True)
         PILImage.fromarray(arr).save(os.path.join(folder, f'{index:05d}.png'))
@@ -2317,41 +2314,17 @@ for stego_map_ablation_idx, ablation_idx in RUN_PLAN:
 def compare_ablations(ablation_configs, data_dir):
     """
     Reads training_history.csv and evaluation_metrics.csv from each
-    ablation run's data directory and prints a ranked comparison table.
+    ablation run's data directory and prints a holdout-driven ranked comparison table.
 
     Returns
     -------
-    df_train  : per-run final-epoch training stats
-    df_holdout: per-run per-method holdout audit stats (averaged)
-    df_rank   : single-row-per-run composite ranking
+    df_holdout: per-run holdout audit stats (averaged)
+    df_rank   : single-row-per-run composite ranking derived from holdout only
     """
-    train_rows = []
     holdout_rows = []
 
     for idx, cfg in enumerate(ablation_configs):
         run_dir = os.path.join(data_dir, str(idx))
-
-        # — Training history (last epoch) —
-        train_path = os.path.join(run_dir, 'training_history.csv')
-        if os.path.exists(train_path):
-            th = pd.read_csv(train_path, index_col='epoch')
-            last = th.iloc[-1]
-            row = {'ablation_idx': idx}
-            row.update({
-                'final_train_loss':    last.get('loss',           float('nan')),
-                'final_val_loss':      last.get('val_loss',        float('nan')),
-                'final_cover_psnr':    last.get('cover_psnr',      float('nan')),
-                'final_val_psnr':      last.get('val_cover_psnr',  float('nan')),
-                'final_secret_ssim':   last.get('secret_ssim',     float('nan')),
-                'final_val_ssim':      last.get('val_secret_ssim', float('nan')),
-                'epochs_trained':      len(th),
-            })
-            # Capture config fields for display
-            row.update({k: v for k, v in cfg.items()})
-            train_rows.append(row)
-        else:
-            print(
-                f"[warn] No training_history.csv for ablation {idx} — skipping")
 
         # — Holdout evaluation metrics (mean across images, per method) —
         eval_path = os.path.join(run_dir, 'evaluation_metrics.csv')
@@ -2360,60 +2333,65 @@ def compare_ablations(ablation_configs, data_dir):
             em['ablation_idx'] = idx
             holdout_rows.append(em)
 
-    if not train_rows:
-        print("No ablation data found — have you run the training and holdout loops yet?")
+    if not holdout_rows:
+        print("No holdout evaluation data found — have you run the holdout loop yet?")
         return None, None, None
 
-    df_train = pd.DataFrame(train_rows).set_index('ablation_idx')
-
     # — Holdout aggregation (exclude 'original' for text metrics) —
-    if holdout_rows:
-        df_hold_all = pd.concat(holdout_rows, ignore_index=True)
-        # Network-level: mean over all methods including original
-        net_agg = (
-            df_hold_all
-            .groupby('ablation_idx')[['psnr_c', 'ssim_c', 'psnr_s', 'ssim_s', 'total_loss']]
-            .mean()
-            .rename(columns={
-                'psnr_c':     'holdout_psnr_cover',
-                'ssim_c':     'holdout_ssim_cover',
-                'psnr_s':     'holdout_psnr_secret',
-                'ssim_s':     'holdout_ssim_secret',
-                'total_loss': 'holdout_total_loss',
-            })
-        )
-        # Text recovery: mean over non-original methods only
-        text_agg = (
-            df_hold_all[df_hold_all['method'] != 'original']
-            .groupby('ablation_idx')[['text_acc', 'ber_text', 'ber_img']]
-            .mean()
-            .rename(columns={
-                'text_acc':  'holdout_text_acc',
-                'ber_text':  'holdout_ber_text',
-                'ber_img':   'holdout_ber_img',
-            })
-        )
-        df_holdout = net_agg.join(text_agg)
-    else:
-        df_holdout = pd.DataFrame()
+    df_hold_all = pd.concat(holdout_rows, ignore_index=True)
+    # Network-level: mean over all methods including original
+    net_agg = (
+        df_hold_all
+        .groupby('ablation_idx')[['psnr_c', 'ssim_c', 'psnr_s', 'ssim_s', 'total_loss']]
+        .mean()
+        .rename(columns={
+            'psnr_c':     'holdout_psnr_cover',
+            'ssim_c':     'holdout_ssim_cover',
+            'psnr_s':     'holdout_psnr_secret',
+            'ssim_s':     'holdout_ssim_secret',
+            'total_loss': 'holdout_total_loss',
+        })
+    )
+    # Text recovery: mean over non-original methods only
+    text_agg = (
+        df_hold_all[df_hold_all['method'] != 'original']
+        .groupby('ablation_idx')[['text_acc', 'ber_text', 'ber_img']]
+        .mean()
+        .rename(columns={
+            'text_acc':  'holdout_text_acc',
+            'ber_text':  'holdout_ber_text',
+            'ber_img':   'holdout_ber_img',
+        })
+    )
+    df_holdout = net_agg.join(text_agg)
+
+    meta_rows = []
+    for idx, cfg in enumerate(ablation_configs):
+        meta_rows.append({
+            'ablation_idx': idx,
+            'BETA': cfg.get('BETA', float('nan')),
+            'ALPHA': cfg.get('ALPHA', float('nan')),
+            'LEARNING_RATE': cfg.get('LEARNING_RATE', float('nan')),
+            'START_NOISE_EP': cfg.get('START_NOISE_EP', float('nan')),
+            'RS_BYTES': cfg.get('RS_BYTES', float('nan')),
+        })
 
     # — Composite ranking —
-    df_rank = df_train[['BETA', 'ALPHA', 'LEARNING_RATE', 'START_NOISE_EP',
-                        'RS_BYTES', 'final_val_loss', 'final_val_psnr',
-                        'final_val_ssim']].copy()
+    df_rank = pd.DataFrame(meta_rows).set_index('ablation_idx')
     if not df_holdout.empty:
-        df_rank = df_rank.join(df_holdout[['holdout_psnr_cover', 'holdout_ssim_cover',
-                                           'holdout_text_acc',   'holdout_ber_text']])
+        df_rank = df_rank.join(df_holdout[[
+            'holdout_psnr_cover',
+            'holdout_ssim_secret',
+            'holdout_text_acc',
+            'holdout_ber_text',
+        ]])
 
     # Higher = better for PSNR/SSIM/text_acc; lower = better for loss/BER.
-    # Rank each metric (1 = best) then average for a composite score.
+    # Rank each holdout metric (1 = best) then average for a composite score.
     rank_cols = {}
     for col, ascending in [
-        ('final_val_loss',      True),
-        ('final_val_psnr',      False),
-        ('final_val_ssim',      False),
         ('holdout_psnr_cover',  False),
-        ('holdout_ssim_cover',  False),
+        ('holdout_ssim_secret', False),
         ('holdout_text_acc',    False),
         ('holdout_ber_text',    True),
     ]:
@@ -2427,12 +2405,9 @@ def compare_ablations(ablation_configs, data_dir):
 
     # — Display —
     print("\n" + "=" * 72)
-    print("ABLATION COMPARISON — Training (final epoch)")
+    print("ABLATION COMPARISON — Holdout-Driven Ranking Inputs")
     print("=" * 72)
-    display(df_train[['BETA', 'ALPHA', 'LEARNING_RATE', 'RS_BYTES',
-                      'START_NOISE_EP', 'epochs_trained',
-                      'final_val_loss', 'final_val_psnr', 'final_val_ssim']]
-            .round(4))
+    display(df_rank.round(4))
 
     if not df_holdout.empty:
         print("\n" + "=" * 72)
@@ -2448,21 +2423,21 @@ def compare_ablations(ablation_configs, data_dir):
     best = df_rank.index[0]
     print(f"\n✅ Best overall ablation: idx {best}  — {ablation_configs[best]}")
 
-    return df_train, df_holdout, df_rank
+    return df_holdout, df_rank
 
 
-def plot_ablation_comparison(df_train, df_holdout, df_rank, ablation_configs, save_path=None):
+def plot_ablation_comparison(df_holdout, df_rank, ablation_configs, save_path=None):
     """
-    2×2 Plotly figure comparing ablations across the four most diagnostic axes:
-      Panel 1 (top-left)  — Cover quality:   val PSNR  + holdout PSNR cover
-      Panel 2 (top-right) — Secret quality:  val SSIM  + holdout SSIM secret
-      Panel 3 (bot-left)  — Text recovery:   holdout text accuracy + BER text
+    2×2 Plotly figure comparing ablations using holdout metrics only:
+      Panel 1 (top-left)  — Holdout PSNR cover
+      Panel 2 (top-right) — Holdout SSIM secret
+      Panel 3 (bot-left)  — Holdout text accuracy + BER text
       Panel 4 (bot-right) — Composite rank score (lower = better)
 
     Each ablation is labelled with its key config params for easy identification.
     """
-    if df_train is None:
-        print("No ablation data to plot.")
+    if df_holdout is None or df_holdout.empty:
+        print("No holdout ablation data to plot.")
         return
 
     # Build short labels: "β=5 α=1 LR=1e-3 RS=32 N@25"
@@ -2471,7 +2446,8 @@ def plot_ablation_comparison(df_train, df_holdout, df_rank, ablation_configs, sa
         lr_str = f"{cfg['LEARNING_RATE']:.0e}"
         n_str = "no-noise" if cfg['START_NOISE_EP'] >= 999 else f"N@{cfg['START_NOISE_EP']}"
         labels.append(
-            f"[{i}] β={cfg['BETA']} α={cfg['ALPHA']} LR={lr_str} RS={cfg['RS_BYTES']} {n_str}")
+            # β={cfg['BETA']} α={cfg['ALPHA']} LR={lr_str} RS={cfg['RS_BYTES']} {n_str}")
+            f"[{i}]")
 
     idx_list = list(range(len(ablation_configs)))
 
@@ -2498,54 +2474,26 @@ def plot_ablation_comparison(df_train, df_holdout, df_rank, ablation_configs, sa
         ],
     )
 
-    # ── Panel 1: PSNR (cover) ─────────────────────────────────────────────
-    # Val PSNR from training history
-    if 'final_val_psnr' in df_train.columns:
-        fig.add_trace(go.Bar(
-            x=labels,
-            y=[df_train.loc[i, 'final_val_psnr'] if i in df_train.index else float('nan')
-               for i in idx_list],
-            name="Val PSNR (train)",
-            marker_color=colors,
-            opacity=0.6,
-            showlegend=True,
-        ), row=1, col=1)
-
-    # Holdout PSNR cover
+    # ── Panel 1: Holdout PSNR cover ───────────────────────────────────────
     if df_holdout is not None and 'holdout_psnr_cover' in df_holdout.columns:
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Bar(
             x=labels,
             y=[df_holdout.loc[i, 'holdout_psnr_cover'] if i in df_holdout.index else float('nan')
                for i in idx_list],
             name="Holdout PSNR cover",
-            mode='markers+lines',
-            marker=dict(size=10, symbol='diamond', color=colors,
-                        line=dict(width=1, color='black')),
-            line=dict(color='black', width=1, dash='dot'),
+            marker_color=colors,
+            opacity=0.8,
         ), row=1, col=1)
 
-    # ── Panel 2: SSIM (secret) ────────────────────────────────────────────
-    if 'final_val_ssim' in df_train.columns:
-        fig.add_trace(go.Bar(
-            x=labels,
-            y=[df_train.loc[i, 'final_val_ssim'] if i in df_train.index else float('nan')
-               for i in idx_list],
-            name="Val SSIM (train)",
-            marker_color=colors,
-            opacity=0.6,
-            showlegend=True,
-        ), row=1, col=2)
-
+    # ── Panel 2: Holdout SSIM secret ──────────────────────────────────────
     if df_holdout is not None and 'holdout_ssim_secret' in df_holdout.columns:
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Bar(
             x=labels,
             y=[df_holdout.loc[i, 'holdout_ssim_secret'] if i in df_holdout.index else float('nan')
                for i in idx_list],
             name="Holdout SSIM secret",
-            mode='markers+lines',
-            marker=dict(size=10, symbol='diamond', color=colors,
-                        line=dict(width=1, color='black')),
-            line=dict(color='black', width=1, dash='dot'),
+            marker_color=colors,
+            opacity=0.8,
         ), row=1, col=2)
 
     # ── Panel 3: Text accuracy (primary) + BER text (secondary) ──────────
@@ -2603,9 +2551,9 @@ def plot_ablation_comparison(df_train, df_holdout, df_rank, ablation_configs, sa
                      row=2, col=1, secondary_y=True)
     fig.update_yaxes(title_text="Avg Rank (lower = better)", row=2, col=2)
 
-    for row, col in [(1, 1), (1, 2), (2, 1), (2, 2)]:
-        fig.update_xaxes(tickangle=-35, tickfont=dict(size=9),
-                         row=row, col=col)
+    # for row, col in [(1, 1), (1, 2), (2, 1), (2, 2)]:
+    #     fig.update_xaxes(tickangle=-35, tickfont=dict(size=9),
+    #                      row=row, col=col)
 
     fig.update_layout(
         height=800, width=1600,
@@ -2627,7 +2575,7 @@ ANALYSIS_STEGO_TAG = STEGO_MAP_ABLATIONS[ANALYSIS_STEGO_MAP_ABLATION_IDX]["tag"]
 analysis_data_dir = os.path.join(data_dir, ANALYSIS_STEGO_TAG)
 analysis_models_dir = os.path.join(models_dir, ANALYSIS_STEGO_TAG)
 
-df_abl_train, df_abl_holdout, df_abl_rank = compare_ablations(
+df_abl_holdout, df_abl_rank = compare_ablations(
     ABLATION_CONFIGS, analysis_data_dir)
 
 df_abl_rank.to_csv(os.path.join(analysis_data_dir,
@@ -2635,7 +2583,7 @@ df_abl_rank.to_csv(os.path.join(analysis_data_dir,
 
 if df_abl_rank is not None:
     plot_ablation_comparison(
-        df_abl_train, df_abl_holdout, df_abl_rank,
+        df_abl_holdout, df_abl_rank,
         ABLATION_CONFIGS,
         save_path=os.path.join(analysis_data_dir, "ablation_comparison.pdf"),
     )
