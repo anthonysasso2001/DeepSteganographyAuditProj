@@ -4,3 +4,6 @@
 [submodule "LSB_Steganography"]
 	path = LSB_Steganography
 	url = https://github.com/RobinDavid/LSB-Steganography.git
+[submodule "aletheia"]
+	path = aletheia
+	url = https://github.com/daniellerch/aletheia.git

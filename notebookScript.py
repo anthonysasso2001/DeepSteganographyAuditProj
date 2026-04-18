@@ -25,6 +25,7 @@ from datasets import load_dataset
 import numpy as np
 import os
 import tensorflow as tf
+from PIL import Image as PILImage
 import gc
 
 # NOTE: may have to change batch size and epochs depending on GPU VRAM. but epochs should be kept to 100 if possible for train accuracy.
@@ -1965,6 +1966,19 @@ def to_display(img_tensor):
     return np.clip(np.round(arr * 255), 0, 255).astype(np.uint8)
 
 
+def save_raw_images(cover, secret, stego, reveal, method_name, index, save_dir, pre_secret=None):
+    """Saves raw PNG images for each role into results_raw/{method}/{role}/ subfolders."""
+    roles = [('cover', cover), ('secret', secret),
+             ('stego', stego), ('reveal', reveal)]
+    if pre_secret is not None:
+        roles.insert(0, ('pre_secret', pre_secret))
+
+    for role, arr in roles:
+        folder = os.path.join(save_dir, 'results_raw', method_name, role)
+        os.makedirs(folder, exist_ok=True)
+        PILImage.fromarray(arr).save(os.path.join(folder, f'{index:05d}.png'))
+
+
 def save_visual_comparison(cover, secret, stego, reveal, method_name, index, save_dir):
     """Saves a side-by-side comparison using Plotly in PDF format."""
     os.makedirs(save_dir, exist_ok=True)
@@ -2242,6 +2256,16 @@ for stego_map_ablation_idx, ablation_idx in RUN_PLAN:
             # --- 4. Periodic Visual Saving ---
             # Saves every 100th image processed to avoid disk bloat
             if (i + 1) % 100 == 0:
+                save_raw_images(
+                    pre_secret=original_secret_img,
+                    cover=to_display(sc[0]),
+                    secret=to_display(ss[0]),
+                    stego=to_display(h_out[0]),
+                    reveal=to_display(r_out[0]),
+                    method_name=method,
+                    index=i,
+                    save_dir=run_data_dir
+                )
                 save_visual_comparison(
                     cover=to_display(sc[0]),
                     secret=to_display(ss[0]),

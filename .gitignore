@@ -1,6 +1,8 @@
 __pycache__/*
 /models/
 **/visual_results/
+**/results_raw/
+logs/
 # just notes file for myself not relevant to share atm.
 notes.md
 .github/

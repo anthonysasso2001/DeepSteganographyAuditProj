@@ -19,3 +19,10 @@ reedsolo
 scipy
 PyWavelets
 tqdm
+imageio
+hdf5storage
+h5py
+steganogan
+python-magic
+efficientnet
+Pillow

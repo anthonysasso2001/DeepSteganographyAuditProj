@@ -7,3 +7,6 @@ A simple audit of "A deep learning-driven multilayered steganographic approach  
 
 ## running code
 Should work with `docker-compose up --build` and then use `http://localhost:8888/?token={token in .env file}` to connect once container is running
+
+## steganalysis
+run `python3 run_aletheia_postprocess.py --run-data-dir /app/data/baseline/0` inside docker with 0 switched for whichever ablation is being targeted
